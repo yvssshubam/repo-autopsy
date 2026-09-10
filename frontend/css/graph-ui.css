@@ -1925,3 +1925,41 @@
   color: var(--accent);
 
 }
+
+
+/* ============================================================
+   SUMMARY LINES
+
+   Model-written, so they read as annotation rather than as data the
+   repository actually stated.
+============================================================ */
+
+.summary-line {
+
+  margin: 8px 18px 14px;
+
+  color: #5b6a6e;
+
+  font: 11px/1.7 var(--sans);
+
+  font-style: italic;
+
+  max-width: 62ch;
+
+}
+
+
+#repoSummary {
+
+  margin: 10px 0 0;
+
+  font-size: 12px;
+
+}
+
+
+.summary-line.is-pending {
+
+  color: #96a09b;
+
+}

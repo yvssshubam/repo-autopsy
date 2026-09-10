@@ -243,6 +243,13 @@ async function api(path, options = {}) {
     data = {};
   }
 
+  if (response.status === 429) {
+    const retry = Number(response.headers.get("Retry-After")) || 30;
+    throw new Error(
+      data.detail || `Too many requests. Try again in ${retry} seconds.`
+    );
+  }
+
   if (!response.ok) {
     throw new Error(data.detail || `Request failed (HTTP ${response.status}).`);
   }
@@ -398,6 +405,9 @@ on("#repoForm", "submit", async event => {
       loadArchitecture("", { record: false }),
       loadRepositoryTree()
     ]);
+
+    /* Deliberately not awaited: the graph is already usable. */
+    loadRepositorySummary();
 
   } catch (error) {
 
@@ -586,8 +596,9 @@ async function loadFileDependencies(path, options = {}) {
     syncTreeToPath(path);
     renderFileInspector(path, data);
 
-    /* Source is a second request so the graph paints first. */
+    /* Neither of these blocks the graph. */
     loadFileSource(path);
+    loadFileSummary(path);
 
   } catch (error) {
 
@@ -2224,6 +2235,132 @@ function ensureScopeControl() {
 
 
 /* ============================================================
+   SUMMARIES
+
+   A one-line description of what a file or repository does, fetched
+   separately so the graph never waits on it. If the backend has no
+   model key, or hits its daily limit, nothing appears and nothing
+   breaks.
+============================================================ */
+
+const summaryCache = new Map();
+
+/* In-flight requests, so clicking the same file repeatedly does not
+   spend the server's per-client allowance on identical questions. */
+const summaryPending = new Map();
+
+/* Set when the server says we are over a limit. Nothing is requested
+   again until it passes. */
+let summaryPausedUntil = 0;
+
+async function fetchSummary(url, key) {
+
+  if (summaryCache.has(key)) return summaryCache.get(key);
+
+  if (Date.now() < summaryPausedUntil) return null;
+
+  if (summaryPending.has(key)) return summaryPending.get(key);
+
+  const request = (async () => {
+
+    try {
+
+      const response = await fetch(url);
+
+      if (response.status === 429 || response.status === 503) {
+        const retry = Number(response.headers.get("Retry-After")) || 60;
+        summaryPausedUntil = Date.now() + retry * 1000;
+        return null;
+      }
+
+      const data = await response.json();
+
+      if (data.summary) summaryCache.set(key, data.summary);
+
+      return data.summary || null;
+
+    } catch {
+      return null;
+    } finally {
+      summaryPending.delete(key);
+    }
+  })();
+
+  summaryPending.set(key, request);
+
+  return request;
+}
+
+function setSummary(selector, text, pending) {
+
+  const host = $(selector);
+  if (!host) return;
+
+  host.textContent = text || "";
+  host.classList.toggle("is-pending", Boolean(pending));
+  host.hidden = !text && !pending;
+}
+
+function ensureSummarySlot(id, afterSelector) {
+
+  if ($(`#${id}`)) return;
+
+  const anchor = $(afterSelector);
+  if (!anchor) return;
+
+  const line = document.createElement("p");
+  line.id = id;
+  line.className = "summary-line";
+  line.hidden = true;
+
+  anchor.parentNode.insertBefore(line, anchor.nextSibling);
+}
+
+async function loadRepositorySummary() {
+
+  ensureSummarySlot("repoSummary", "#project");
+
+  const key = `repo:${state.repo.fullName}`;
+
+  if (summaryCache.has(key)) {
+    setSummary("#repoSummary", summaryCache.get(key), false);
+    return;
+  }
+
+  setSummary("#repoSummary", "Reading the repository…", true);
+
+  const summary = await fetchSummary(
+    `${API_BASE}/api/repository/summary?${repoQuery()}`,
+    key
+  );
+
+  setSummary("#repoSummary", summary, false);
+}
+
+async function loadFileSummary(path) {
+
+  ensureSummarySlot("fileSummary", "#depTitle");
+
+  if (summaryCache.has(path)) {
+    setSummary("#fileSummary", summaryCache.get(path), false);
+    return;
+  }
+
+  setSummary("#fileSummary", "Reading the file…", true);
+
+  const summary = await fetchSummary(
+    `${API_BASE}/api/repository/file/summary?${repoQuery({ path })}`,
+    path
+  );
+
+  /* The user may have moved on while this was in flight. */
+  if (state.path !== path) return;
+
+  setSummary("#fileSummary", summary, false);
+}
+
+
+/* ============================================================
    PANES
 
    Architecture and Dependencies each get their own canvas and file
@@ -2589,6 +2726,7 @@ function showDependencyHint() {
   setText("#depNodeCount", "0");
   setText("#depEdgeCount", "0");
 
+  setSummary("#fileSummary", null, false);
   renderDependencyPicker();
 }
 

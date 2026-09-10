@@ -22,7 +22,7 @@ from contextlib import asynccontextmanager
 import httpx
 from dotenv import load_dotenv
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -49,6 +49,35 @@ ALLOWED_ORIGINS = [
     ).split(",")
     if origin.strip()
 ]
+
+
+# ============================================================
+# SUMMARIES (optional)
+#
+# Off unless GROQ_API_KEY is set. Everything below fails silently:
+# no key, a rate limit or a network error means the graph renders
+# exactly as it does without summaries.
+# ============================================================
+
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+
+GROQ_URL = os.getenv(
+    "GROQ_URL",
+    "https://api.groq.com/openai/v1/chat/completions",
+)
+
+SUMMARY_MODEL = os.getenv("SUMMARY_MODEL", "openai/gpt-oss-20b")
+REPO_MODEL = os.getenv("REPO_MODEL", "openai/gpt-oss-120b")
+
+# The free tier allows 1,000 requests a day across the organisation.
+# Stop short of it so the last stretch of a session degrades quietly
+# instead of throwing a wall of 429s.
+DAILY_CALL_BUDGET = int(os.getenv("DAILY_CALL_BUDGET", "900"))
+
+# How much of a file's opening goes into the prompt. Structure carries
+# most of the meaning, so this stays small: the whole prompt lands near
+# 150 tokens, which keeps 30 requests a minute inside the 8K TPM cap.
+HEAD_CHARACTERS = 600
 
 
 # ============================================================
@@ -101,10 +130,18 @@ async def lifespan(app: FastAPI):
     print("REPO AUTOPSY BACKEND")
     print("=" * 60)
     print(f"GitHub token:        {'present' if GITHUB_TOKEN else 'MISSING'}")
+    print(
+        f"Summaries:           "
+        f"{'on (' + SUMMARY_MODEL + ')' if GROQ_API_KEY else 'off (no GROQ_API_KEY)'}"
+    )
     print(f"Allowed origins:     {', '.join(ALLOWED_ORIGINS)}")
     print(f"Concurrent fetches:  {FETCH_CONCURRENCY}")
     print("Import resolution:   Python, JS/TS, C/C++, Java")
     print("Dependency scans:    shallow by default, deep on request")
+    print(
+        f"Per-client limits:   summary {RATE_BUCKETS['summary'][0]}/min, "
+        f"github {RATE_BUCKETS['github'][0]}/min"
+    )
     print("=" * 60)
     print()
 
@@ -129,6 +166,156 @@ app.add_middleware(
 
 class RepositoryRequest(BaseModel):
     url: str
+
+
+# ============================================================
+# RATE LIMITING
+#
+# The daily budget above protects the account in aggregate. This
+# protects it from one visitor: without a per-client limit, a single
+# person holding down refresh can spend the whole day's quota in a
+# couple of minutes, and everyone else gets nothing.
+#
+# Two costs are worth defending. Model calls are the expensive one.
+# GitHub reads are the slower one, and exhausting that quota breaks
+# the app for every user for an hour.
+# ============================================================
+
+# Behind a proxy the peer address is the proxy, so the real client is
+# in X-Forwarded-For. Only trust that header when you actually run
+# behind something that sets it, or anyone can spoof an identity.
+TRUST_PROXY = os.getenv("TRUST_PROXY", "").lower() in ("1", "true", "yes")
+
+# bucket -> (per minute, per day)
+RATE_BUCKETS = {
+    "summary": (
+        int(os.getenv("SUMMARY_RPM", "12")),
+        int(os.getenv("SUMMARY_RPD", "120")),
+    ),
+    "github": (
+        int(os.getenv("GITHUB_RPM", "45")),
+        int(os.getenv("GITHUB_RPD", "800")),
+    ),
+    "cheap": (
+        int(os.getenv("CHEAP_RPM", "120")),
+        int(os.getenv("CHEAP_RPD", "4000")),
+    ),
+}
+
+# Keep some GitHub quota in reserve so an expensive scan can never
+# leave the cheap structural views broken for the rest of the hour.
+GITHUB_RESERVE = int(os.getenv("GITHUB_RESERVE", "250"))
+
+# client -> bucket -> {"minute": [timestamps], "day": (date, count)}
+_rate_state: dict[str, dict[str, dict]] = {}
+
+_rate_last_swept = 0.0
+
+
+def client_id(request: Request) -> str:
+
+    if TRUST_PROXY:
+        forwarded = request.headers.get("x-forwarded-for", "")
+        if forwarded:
+            return forwarded.split(",")[0].strip()
+
+    return request.client.host if request.client else "unknown"
+
+
+def sweep_rate_state(now: float):
+    """Drop clients that have gone quiet, so memory does not grow with
+    every visitor that ever hit the service."""
+
+    global _rate_last_swept
+
+    if now - _rate_last_swept < 300:
+        return
+
+    _rate_last_swept = now
+
+    for key in list(_rate_state.keys()):
+
+        buckets = _rate_state[key]
+
+        active = any(
+            bucket["minute"] and now - bucket["minute"][-1] < 3600
+            for bucket in buckets.values()
+        )
+
+        if not active:
+            del _rate_state[key]
+
+
+def rate_limit(bucket: str):
+    """FastAPI dependency. Raises 429 with Retry-After when a client is
+    over either window."""
+
+    async def check(request: Request):
+
+        # Read the bucket per call rather than closing over it, so the
+        # limits stay adjustable at runtime.
+        per_minute, per_day = RATE_BUCKETS[bucket]
+
+        now = time.time()
+        today = time.strftime("%Y-%m-%d")
+
+        sweep_rate_state(now)
+
+        key = client_id(request)
+
+        state = _rate_state.setdefault(key, {})
+        entry = state.setdefault(bucket, {"minute": [], "day": (today, 0)})
+
+        # Sliding minute.
+        entry["minute"] = [
+            stamp for stamp in entry["minute"] if now - stamp < 60
+        ]
+
+        if len(entry["minute"]) >= per_minute:
+            oldest = entry["minute"][0]
+            retry = max(1, int(60 - (now - oldest)))
+            raise HTTPException(
+                status_code=429,
+                detail=(
+                    "Slow down a moment — too many requests. "
+                    f"Try again in {retry}s."
+                ),
+                headers={"Retry-After": str(retry)},
+            )
+
+        # Calendar day.
+        day, count = entry["day"]
+
+        if day != today:
+            day, count = today, 0
+
+        if count >= per_day:
+            raise HTTPException(
+                status_code=429,
+                detail="Daily limit reached for this client. Resets at midnight UTC.",
+                headers={"Retry-After": "3600"},
+            )
+
+        entry["minute"].append(now)
+        entry["day"] = (day, count + 1)
+
+    return check
+
+
+async def guard_github_quota():
+    """Refuse expensive work when the GitHub budget is nearly gone, so
+    the cheap structural endpoints keep working."""
+
+    remaining = RATE_LIMIT.get("remaining")
+
+    if remaining is not None and remaining < GITHUB_RESERVE:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                f"Only {remaining} GitHub requests left this hour, so "
+                "source analysis is paused. Structure still works."
+            ),
+        )
 
 
 # ============================================================
@@ -848,6 +1035,9 @@ def index_file(repo_key: str, file_path: str, content: str,
         "external": list(dict.fromkeys(external)),
         "functions": analysis["functions"],
         "classes": analysis["classes"],
+        # Kept so a summary costs no extra GitHub request for any file
+        # the user has already opened.
+        "head": content[:HEAD_CHARACTERS],
     }
 
     IMPORT_INDEX.setdefault(repo_key, {})[file_path] = entry
@@ -900,6 +1090,144 @@ async def index_files(repo_key: str, owner: str, repo: str, branch: str,
         "skipped": len(paths) - len(pending),
         "rateLimited": rate_limited,
     }
+
+
+# ============================================================
+# MODEL CALLS
+# ============================================================
+
+# sha or repo key -> summary text
+SUMMARY_CACHE: dict[str, str] = {}
+
+CALL_BUDGET = {"date": None, "used": 0}
+
+
+def budget_remaining() -> int:
+
+    today = time.strftime("%Y-%m-%d")
+
+    if CALL_BUDGET["date"] != today:
+        CALL_BUDGET["date"] = today
+        CALL_BUDGET["used"] = 0
+
+    return DAILY_CALL_BUDGET - CALL_BUDGET["used"]
+
+
+async def call_model(model: str, system: str, user: str,
+                     max_tokens: int = 400) -> str | None:
+    """Returns the text, or None for any reason at all. A summary is a
+    nicety; nothing upstream should have to handle its absence as an
+    error."""
+
+    if not GROQ_API_KEY:
+        return None
+
+    if budget_remaining() <= 0:
+        print("Summary budget for today is spent.")
+        return None
+
+    CALL_BUDGET["used"] += 1
+
+    try:
+        response = await get_shared_client().post(
+            GROQ_URL,
+            headers={
+                "Authorization": f"Bearer {GROQ_API_KEY}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": model,
+                "messages": [
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user},
+                ],
+                # gpt-oss models reason before answering, and the
+                # reasoning comes out of the same token budget. Too low
+                # a ceiling and the whole allowance goes on thinking,
+                # leaving content empty with no error at all.
+                "max_completion_tokens": max_tokens,
+                "reasoning_effort": "low",
+                "temperature": 0.2,
+            },
+        )
+
+    except Exception as error:
+        print("Summary request failed:", error)
+        return None
+
+    if response.status_code == 429:
+        print("Summary rate limit reached.")
+        return None
+
+    if response.status_code != 200:
+        print("Summary error:", response.status_code, response.text[:200])
+        return None
+
+    try:
+        choice = response.json()["choices"][0]
+    except (KeyError, IndexError, ValueError):
+        print("Summary response had no choices.")
+        return None
+
+    message = choice.get("message", {})
+    text = (message.get("content") or "").strip()
+
+    if not text:
+        # Some reasoning models put everything in `reasoning` when the
+        # answer gets truncated. Say so rather than failing silently.
+        print(
+            "Summary came back empty "
+            f"(finish_reason={choice.get('finish_reason')}, "
+            f"reasoning={len(message.get('reasoning') or '')} chars). "
+            "Raise the token ceiling if this repeats."
+        )
+        return None
+
+    return " ".join(text.split()).strip() or None
+
+
+FILE_SYSTEM_PROMPT = (
+    "You describe source files for a developer reading an unfamiliar "
+    "codebase. Reply with ONE sentence, under 20 words, saying what the "
+    "file does. No preamble, no file name, no markdown. If the evidence "
+    "is thin, say what it appears to do."
+)
+
+REPO_SYSTEM_PROMPT = (
+    "You explain what a software project is for, to a developer who has "
+    "just opened it. Reply with two short sentences: what it does, and "
+    "how it is organised. No preamble, no markdown, no bullet points."
+)
+
+
+def build_file_prompt(path: str, entry: dict | None, head: str) -> str:
+    """Structure first, source second. A list of exports says more about
+    a file's purpose than eighty lines of imports and licence header,
+    and costs a tenth of the tokens."""
+
+    lines = [f"File: {path}", f"Language: {detect_language(path)}"]
+
+    if entry:
+
+        if entry.get("resolved"):
+            lines.append(
+                "Imports from this repo: "
+                + ", ".join(entry["resolved"][:8])
+            )
+
+        if entry.get("external"):
+            lines.append("Packages: " + ", ".join(entry["external"][:8]))
+
+        if entry.get("functions"):
+            lines.append("Functions: " + ", ".join(entry["functions"][:12]))
+
+        if entry.get("classes"):
+            lines.append("Classes: " + ", ".join(entry["classes"][:8]))
+
+    if head:
+        lines.append("Opening lines:\n" + head)
+
+    return "\n".join(lines)
 
 
 # ============================================================
@@ -990,7 +1318,7 @@ async def health():
     }
 
 
-@app.post("/api/analyze")
+@app.post("/api/analyze", dependencies=[Depends(rate_limit("cheap"))])
 async def analyze_repository(request: RepositoryRequest):
 
     owner, repo = parse_github_url(request.url)
@@ -1035,7 +1363,7 @@ async def analyze_repository(request: RepositoryRequest):
     }
 
 
-@app.get("/api/repository/tree")
+@app.get("/api/repository/tree", dependencies=[Depends(rate_limit("cheap"))])
 async def repository_tree(owner: str, repo: str, branch: str):
 
     tree = await get_tree(owner, repo, branch)
@@ -1068,7 +1396,10 @@ async def repository_tree(owner: str, repo: str, branch: str):
     }
 
 
-@app.get("/api/repository/architecture")
+@app.get(
+    "/api/repository/architecture",
+    dependencies=[Depends(rate_limit("cheap"))],
+)
 async def architecture(owner: str, repo: str, branch: str):
 
     tree = await get_tree(owner, repo, branch)
@@ -1098,7 +1429,10 @@ async def architecture(owner: str, repo: str, branch: str):
     }
 
 
-@app.get("/api/repository/architecture/expand")
+@app.get(
+    "/api/repository/architecture/expand",
+    dependencies=[Depends(rate_limit("cheap"))],
+)
 async def architecture_expand(owner: str, repo: str, branch: str, path: str):
 
     path = path.strip("/")
@@ -1137,7 +1471,10 @@ async def architecture_expand(owner: str, repo: str, branch: str, path: str):
     }
 
 
-@app.get("/api/repository/file")
+@app.get(
+    "/api/repository/file",
+    dependencies=[Depends(rate_limit("github")), Depends(guard_github_quota)],
+)
 async def repository_file(owner: str, repo: str, branch: str, path: str):
 
     if not path or path.startswith("/") or ".." in path.split("/"):
@@ -1193,7 +1530,10 @@ async def repository_file(owner: str, repo: str, branch: str, path: str):
 # FILE DEPENDENCIES  (one file out, bounded scan back)
 # ============================================================
 
-@app.get("/api/repository/file/dependencies")
+@app.get(
+    "/api/repository/file/dependencies",
+    dependencies=[Depends(rate_limit("github")), Depends(guard_github_quota)],
+)
 async def file_dependencies(
     owner: str,
     repo: str,
@@ -1398,10 +1738,183 @@ async def file_dependencies(
 
 
 # ============================================================
+# SUMMARY ENDPOINTS
+# ============================================================
+
+def blob_sha(tree, path: str) -> str | None:
+
+    for item in tree:
+        if item.get("path") == path and item.get("type") == "blob":
+            return item.get("sha")
+
+    return None
+
+
+@app.get(
+    "/api/repository/file/summary",
+    dependencies=[Depends(rate_limit("summary"))],
+)
+async def file_summary(owner: str, repo: str, branch: str, path: str):
+    """One line on what a file does.
+
+    Cached on the blob sha, so a given version of a file is summarised
+    once ever and an edit invalidates itself."""
+
+    path = path.strip("/")
+
+    if not path or ".." in path.split("/"):
+        raise HTTPException(status_code=400, detail="Invalid file path.")
+
+    if not GROQ_API_KEY:
+        return {"path": path, "summary": None, "reason": "no_key"}
+
+    tree = await get_tree(owner, repo, branch)
+
+    sha = blob_sha(tree, path)
+
+    if sha is None:
+        raise HTTPException(status_code=404, detail="File not in the tree.")
+
+    cache_id = f"file:{sha}"
+
+    if cache_id in SUMMARY_CACHE:
+        return {"path": path, "summary": SUMMARY_CACHE[cache_id], "cached": True}
+
+    repo_key = cache_key(owner, repo, branch)
+    entry = IMPORT_INDEX.get(repo_key, {}).get(path)
+
+    head = (entry or {}).get("head", "")
+
+    # Only reach for the file if the dependency view has not already
+    # read it, which it usually has by the time a summary is wanted.
+    if not head:
+        semaphore = asyncio.Semaphore(1)
+        try:
+            content = await fetch_file_text(
+                semaphore, owner, repo, branch, path
+            )
+        except HTTPException:
+            content = None
+
+        head = (content or "")[:HEAD_CHARACTERS]
+
+    if not head and not entry:
+        return {"path": path, "summary": None, "reason": "unreadable"}
+
+    summary = await call_model(
+        SUMMARY_MODEL,
+        FILE_SYSTEM_PROMPT,
+        build_file_prompt(path, entry, head),
+        max_tokens=400,
+    )
+
+    if summary:
+        SUMMARY_CACHE[cache_id] = summary
+
+    return {
+        "path": path,
+        "summary": summary,
+        "cached": False,
+        "budgetRemaining": budget_remaining(),
+    }
+
+
+README_NAMES = ("README.md", "README.rst", "README.txt", "readme.md")
+
+MANIFEST_NAMES = (
+    "package.json", "pyproject.toml", "requirements.txt",
+    "Cargo.toml", "go.mod", "pom.xml",
+)
+
+
+@app.get(
+    "/api/repository/summary",
+    dependencies=[Depends(rate_limit("summary"))],
+)
+async def repository_summary(owner: str, repo: str, branch: str):
+    """What this repository is for. One call per repository, cached."""
+
+    if not GROQ_API_KEY:
+        return {"summary": None, "reason": "no_key"}
+
+    repo_key = cache_key(owner, repo, branch)
+    cache_id = f"repo:{repo_key}"
+
+    if cache_id in SUMMARY_CACHE:
+        return {"summary": SUMMARY_CACHE[cache_id], "cached": True}
+
+    tree = await get_tree(owner, repo, branch)
+
+    paths = {item["path"] for item in tree if item.get("type") == "blob"}
+
+    semaphore = asyncio.Semaphore(2)
+
+    async def read(name: str, limit: int) -> str:
+        if name not in paths:
+            return ""
+        try:
+            content = await fetch_file_text(
+                semaphore, owner, repo, branch, name
+            )
+        except HTTPException:
+            return ""
+        return (content or "")[:limit]
+
+    readme = ""
+
+    for name in README_NAMES:
+        readme = await read(name, 1800)
+        if readme:
+            break
+
+    manifest = ""
+
+    for name in MANIFEST_NAMES:
+        manifest = await read(name, 600)
+        if manifest:
+            manifest = f"{name}:\n{manifest}"
+            break
+
+    folders = [
+        node["label"]
+        for node in build_level_nodes(tree, prefix="")
+        if node["type"] == "directory"
+    ][:20]
+
+    if not readme and not manifest and not folders:
+        return {"summary": None, "reason": "nothing_to_read"}
+
+    prompt = "\n\n".join(
+        part for part in (
+            f"Repository: {owner}/{repo}",
+            f"Top-level folders: {', '.join(folders)}" if folders else "",
+            manifest,
+            f"README:\n{readme}" if readme else "",
+        ) if part
+    )
+
+    summary = await call_model(
+        REPO_MODEL, REPO_SYSTEM_PROMPT, prompt, max_tokens=700
+    )
+
+    if summary:
+        SUMMARY_CACHE[cache_id] = summary
+
+    return {
+        "summary": summary,
+        "cached": False,
+        "budgetRemaining": budget_remaining(),
+    }
+
+
+# ============================================================
 # FOLDER DEPENDENCIES
 # ============================================================
 
-@app.get("/api/repository/architecture/dependencies")
+@app.get(
+    "/api/repository/architecture/dependencies",
+    dependencies=[Depends(rate_limit("github")), Depends(guard_github_quota)],
+)
 async def architecture_dependencies(
     owner: str,
     repo: str,
@@ -1507,7 +2020,10 @@ async def architecture_dependencies(
     }
 
 
-@app.get("/api/repository/dependencies")
+@app.get(
+    "/api/repository/dependencies",
+    dependencies=[Depends(rate_limit("github")), Depends(guard_github_quota)],
+)
 async def legacy_dependencies(owner: str, repo: str, branch: str):
     """Kept for older frontends. Routes to the shallow root scan."""
 
