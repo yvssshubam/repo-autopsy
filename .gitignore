@@ -16,3 +16,9 @@ node_modules/
 # os
 .DS_Store
 Thumbs.db
+
+# Editors
+.vscode/
+.idea/
+*.swp
+*.swo
