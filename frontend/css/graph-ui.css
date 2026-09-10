@@ -1,0 +1,1927 @@
+/* ============================================================
+   REPO AUTOPSY — analyzer controls
+
+   Loaded AFTER style.css. It adds only what the rewritten script
+   needs, using the existing tokens (--ink, --accent, --line,
+   --mono, --deep, --muted, --surface).
+
+   It deliberately does NOT redefine .graph-toolbar, .loading-card,
+   .graph-empty, .graph-canvas, .tree-button or .graph-node rect —
+   style.css already owns those and they still work.
+============================================================ */
+
+
+/* ============================================================
+   CONTROL STRIP
+
+   Sits between the existing .graph-toolbar and the canvas:
+   Back and Reset on the left, zoom on the right.
+============================================================ */
+
+.graph-controls {
+
+  display: flex;
+
+  align-items: center;
+
+  justify-content: space-between;
+
+  gap: 14px;
+
+  padding: 9px 18px;
+
+  background: #f2f4ef;
+
+  border-bottom: 1px solid #cbd1ca;
+
+}
+
+
+.control-group {
+
+  display: flex;
+
+  align-items: center;
+
+  gap: 6px;
+
+}
+
+
+.graph-control {
+
+  border: 1px solid #aeb8b2;
+
+  background: #f8f9f5;
+
+  color: var(--ink);
+
+  padding: 7px 12px;
+
+  font: 10px var(--mono);
+
+  letter-spacing: .4px;
+
+}
+
+
+.graph-control:hover:not(:disabled) {
+
+  background: #e5e9e3;
+
+  border-color: #8c9992;
+
+}
+
+
+.zoom-level {
+
+  min-width: 42px;
+
+  text-align: center;
+
+  color: var(--muted);
+
+  font: 10px var(--mono);
+
+}
+
+
+/* Keyboard users need to see where they are. */
+.graph-control:focus-visible,
+.path-crumb:focus-visible,
+.tree-filter:focus-visible,
+.dep-link:focus-visible,
+.scope-toggle:focus-visible {
+
+  outline: 2px solid var(--accent);
+
+  outline-offset: 2px;
+
+}
+
+
+.graph-node:focus-visible .node-body {
+
+  stroke: var(--accent);
+
+  stroke-width: 2.5;
+
+}
+
+
+/* ============================================================
+   BREADCRUMB
+
+   The path is the navigation: each segment returns to that level.
+   style.css sets the container's type; this turns the segments
+   into controls and lets a deep path scroll rather than clip.
+============================================================ */
+
+.graph-breadcrumb {
+
+  display: flex;
+
+  align-items: center;
+
+  gap: 1px;
+
+  overflow-x: auto;
+
+  overflow-y: hidden;
+
+}
+
+
+.path-crumb {
+
+  border: 0;
+
+  background: none;
+
+  color: var(--muted);
+
+  padding: 3px 5px;
+
+  font: 12px var(--mono);
+
+  white-space: nowrap;
+
+}
+
+
+.path-crumb:hover:not(.path-crumb-current) {
+
+  color: var(--accent);
+
+}
+
+
+.path-crumb-current {
+
+  color: #28383e;
+
+  cursor: default;
+
+}
+
+
+.path-separator {
+
+  color: #a9b3ac;
+
+}
+
+
+/* ============================================================
+   GRAPH STATES
+
+   The renderer draws its rect with class .node-body so these rules
+   can add selection and dimming without disturbing the base look.
+============================================================ */
+
+.graph-canvas {
+
+  cursor: grab;
+
+}
+
+
+.graph-node .node-body {
+
+  fill: #fafbf7;
+
+  stroke: #aebbb3;
+
+  stroke-width: 1.2;
+
+  transition:
+    fill .12s ease,
+    stroke .12s ease;
+
+}
+
+
+.graph-node:hover .node-body {
+
+  fill: #eef2ec;
+
+  stroke: #6e8178;
+
+}
+
+
+/* Folders read as containers, files as leaves. */
+.node-directory .node-body,
+.node-repository .node-body {
+
+  fill: #edf1ea;
+
+}
+
+
+.node-repository .node-body {
+
+  stroke: var(--deep);
+
+  stroke-width: 1.6;
+
+}
+
+
+.node-external .node-body {
+
+  fill: transparent;
+
+  stroke-dasharray: 4 3;
+
+}
+
+
+.node-more .node-body {
+
+  fill: transparent;
+
+  stroke: var(--accent);
+
+  stroke-dasharray: 2 3;
+
+}
+
+
+.node-more .graph-node-title {
+
+  fill: var(--accent);
+
+}
+
+
+.is-parent .node-body {
+
+  fill: #e2e7e0;
+
+}
+
+
+/* README, package.json, and the other repository landmarks. */
+.is-important .node-body {
+
+  stroke: var(--accent);
+
+}
+
+
+.role-selected .node-body {
+
+  fill: #e7ece6;
+
+  stroke: var(--deep);
+
+  stroke-width: 2;
+
+}
+
+
+.graph-node.is-selected .node-body {
+
+  stroke: var(--accent);
+
+  stroke-width: 2;
+
+}
+
+
+.graph-node.is-linked .node-body {
+
+  stroke: var(--accent);
+
+}
+
+
+.graph-node.is-dimmed {
+
+  opacity: .28;
+
+}
+
+
+.graph-edge {
+
+  transition:
+    opacity .12s ease,
+    stroke .12s ease;
+
+}
+
+
+.graph-edge.edge-dependency {
+
+  stroke: #8b9a92;
+
+}
+
+
+.graph-edge.edge-external {
+
+  stroke-dasharray: 4 4;
+
+}
+
+
+.graph-edge.is-linked {
+
+  stroke: var(--accent);
+
+  stroke-width: 2;
+
+}
+
+
+.graph-edge.is-dimmed {
+
+  opacity: .15;
+
+}
+
+
+.arrowhead {
+
+  fill: #aeb9b2;
+
+}
+
+
+.arrowhead.dependency {
+
+  fill: #8b9a92;
+
+}
+
+
+/* ============================================================
+   EMPTY STATE
+
+   style.css positions .graph-empty; these are the two lines the
+   renderer puts inside it.
+============================================================ */
+
+.graph-empty-title {
+
+  margin: 0 0 8px;
+
+  color: var(--ink);
+
+  font: 12px var(--mono);
+
+}
+
+
+.graph-empty-message {
+
+  margin: 0;
+
+  max-width: 46ch;
+
+}
+
+
+/* ============================================================
+   EXPLORER FILTER
+============================================================ */
+
+.tree-filter {
+
+  width: 100%;
+
+  height: 32px;
+
+  margin-top: 10px;
+
+  padding: 0 9px;
+
+  border: 1px solid #b8c0ba;
+
+  background: var(--surface);
+
+  color: var(--ink);
+
+  font: 10px var(--mono);
+
+  outline: none;
+
+}
+
+
+.tree-filter::placeholder {
+
+  color: #8b9591;
+
+}
+
+
+.tree-filter:focus {
+
+  border-color: #8c9992;
+
+}
+
+
+/* ============================================================
+   FACTS
+
+   Label and value on one line, so a 270px sidebar stays readable.
+============================================================ */
+
+.fact {
+
+  display: flex;
+
+  justify-content: space-between;
+
+  gap: 10px;
+
+  padding: 2px 0;
+
+}
+
+
+.fact-label {
+
+  color: #8b9591;
+
+}
+
+
+/* ============================================================
+   DEPENDENCY LISTS
+
+   Each entry jumps to that file's graph.
+============================================================ */
+
+.dep-link {
+
+  border: 0;
+
+  border-bottom: 1px solid transparent;
+
+  background: none;
+
+  padding: 0;
+
+  color: #4f5e62;
+
+  font: 10px var(--mono);
+
+  text-align: left;
+
+  overflow-wrap: anywhere;
+
+}
+
+
+.dep-link:hover {
+
+  color: var(--accent);
+
+  border-bottom-color: var(--accent);
+
+}
+
+
+.dep-external {
+
+  color: #7b8587;
+
+}
+
+
+.dep-external::after {
+
+  content: " · external";
+
+  color: #a9b3ac;
+
+}
+
+
+.muted {
+
+  color: #8b9591;
+
+}
+
+
+.scope-toggle {
+
+  margin-top: 12px;
+
+  border: 1px solid #c0c7c1;
+
+  background: transparent;
+
+  color: var(--muted);
+
+  padding: 6px 10px;
+
+  font: 9px var(--mono);
+
+  letter-spacing: .4px;
+
+}
+
+
+.scope-toggle:hover {
+
+  color: var(--accent);
+
+  border-color: var(--accent);
+
+}
+
+
+/* ============================================================
+   MOTION
+============================================================ */
+
+@media (prefers-reduced-motion: reduce) {
+
+  html {
+
+    scroll-behavior: auto;
+
+  }
+
+
+  .graph-node .node-body,
+  .graph-edge {
+
+    transition: none;
+
+  }
+
+
+  .loading-bar::after {
+
+    animation: none;
+
+    width: 100%;
+
+    opacity: .5;
+
+  }
+
+}
+
+
+/* ============================================================
+   RESPONSIVE
+============================================================ */
+
+@media (max-width: 900px) {
+
+  .graph-controls {
+
+    flex-wrap: wrap;
+
+    padding: 8px 12px;
+
+  }
+
+}
+
+
+@media (max-width: 700px) {
+
+  .graph-control {
+
+    padding: 6px 9px;
+
+  }
+
+}
+
+
+/* ============================================================
+   ============================================================
+   MISSING STRUCTURE
+
+   index.html uses these classes but style.css does not define
+   them, so without this block every tab renders stacked on top
+   of the others and both legal pages sit in the middle of the
+   landing page.
+   ============================================================
+============================================================ */
+
+
+/* ============================================================
+   TABS AND VIEWS
+============================================================ */
+
+.tabs {
+
+  display: flex;
+
+  gap: 2px;
+
+  margin-bottom: 22px;
+
+  border-bottom: 1px solid var(--line);
+
+}
+
+
+.tabs button {
+
+  border: 1px solid transparent;
+
+  border-bottom: 0;
+
+  background: transparent;
+
+  color: var(--muted);
+
+  padding: 10px 16px;
+
+  font: 11px var(--mono);
+
+  letter-spacing: .3px;
+
+  position: relative;
+
+  bottom: -1px;
+
+}
+
+
+.tabs button:hover {
+
+  color: var(--ink);
+
+}
+
+
+.tabs button.active {
+
+  border-color: var(--line);
+
+  background: #f8f9f5;
+
+  color: var(--ink);
+
+}
+
+
+.view {
+
+  display: none;
+
+}
+
+
+.view.active {
+
+  display: block;
+
+}
+
+
+.view-intro {
+
+  display: flex;
+
+  justify-content: space-between;
+
+  align-items: flex-end;
+
+  gap: 24px;
+
+  margin-bottom: 22px;
+
+}
+
+
+.view-intro h2 {
+
+  font-size: 30px;
+
+  letter-spacing: -1.4px;
+
+}
+
+
+.view-intro p {
+
+  margin: 9px 0 0;
+
+  max-width: 620px;
+
+  color: #657276;
+
+  font-size: 11px;
+
+  line-height: 1.7;
+
+}
+
+
+/* ============================================================
+   OVERVIEW
+============================================================ */
+
+.metrics {
+
+  display: grid;
+
+  grid-template-columns: repeat(4, 1fr);
+
+  gap: 1px;
+
+  margin-bottom: 18px;
+
+  border: 1px solid var(--line);
+
+  background: var(--line);
+
+}
+
+
+.metrics > div {
+
+  padding: 16px 18px;
+
+  background: #f8f9f5;
+
+}
+
+
+.metrics span {
+
+  display: block;
+
+  color: #788386;
+
+  font: 9px var(--mono);
+
+  letter-spacing: .6px;
+
+}
+
+
+.metrics b {
+
+  display: block;
+
+  margin: 8px 0 4px;
+
+  font-size: 26px;
+
+  font-weight: 600;
+
+  letter-spacing: -1px;
+
+}
+
+
+.metrics small {
+
+  color: #8b9591;
+
+  font-size: 10px;
+
+}
+
+
+.grid {
+
+  display: grid;
+
+  grid-template-columns: 1fr 1.4fr;
+
+  gap: 18px;
+
+  align-items: start;
+
+}
+
+
+/* Important modules list. */
+
+.module-row {
+
+  display: flex;
+
+  justify-content: space-between;
+
+  align-items: baseline;
+
+  gap: 12px;
+
+  width: 100%;
+
+  border: 0;
+
+  border-bottom: 1px solid #e0e4de;
+
+  background: transparent;
+
+  padding: 10px 15px;
+
+  text-align: left;
+
+  font: 10px var(--mono);
+
+}
+
+
+.module-row:hover {
+
+  background: #eef2ec;
+
+}
+
+
+.module-name {
+
+  color: var(--ink);
+
+  overflow-wrap: anywhere;
+
+}
+
+
+.module-note {
+
+  flex: 0 0 auto;
+
+  color: #8b9591;
+
+}
+
+
+.module-empty {
+
+  padding: 15px;
+
+  color: #68757a;
+
+  font: 11px var(--mono);
+
+}
+
+
+/* ============================================================
+   DEPENDENCIES VIEW
+============================================================ */
+
+.dep-layout {
+
+  display: grid;
+
+  gap: 18px;
+
+}
+
+
+.dep-graph-panel {
+
+  overflow: hidden;
+
+}
+
+
+.graph-reset {
+
+  border: 1px solid #aeb8b2;
+
+  background: #f8f9f5;
+
+  color: var(--ink);
+
+  padding: 8px 13px;
+
+  font: 10px var(--mono);
+
+}
+
+
+.graph-reset:hover {
+
+  background: #e5e9e3;
+
+}
+
+
+.search {
+
+  display: flex;
+
+  align-items: center;
+
+  gap: 8px;
+
+  flex: 0 0 auto;
+
+  border: 1px solid var(--line);
+
+  background: var(--surface);
+
+  padding: 0 12px;
+
+  height: 38px;
+
+  color: #8b9591;
+
+}
+
+
+.search input {
+
+  width: 190px;
+
+  border: 0;
+
+  background: transparent;
+
+  outline: none;
+
+  font: 10px var(--mono);
+
+  color: var(--ink);
+
+}
+
+
+/* ============================================================
+   ARCHITECTURE VIEW
+
+   The .map block in index.html is a hardcoded illustration, not
+   repository data. These rules keep it from collapsing until you
+   remove it — the live graph is the one in the Dependencies view.
+============================================================ */
+
+.map {
+
+  position: relative;
+
+  height: 420px;
+
+  border: 1px solid var(--line);
+
+  background: #f5f6f1;
+
+}
+
+
+.map svg {
+
+  position: absolute;
+
+  inset: 0;
+
+  width: 100%;
+
+  height: 100%;
+
+}
+
+
+.map svg path {
+
+  fill: none;
+
+  stroke: #aeb9b2;
+
+  stroke-width: 1.2;
+
+}
+
+
+.map .node {
+
+  position: absolute;
+
+  border: 1px solid #aebbb3;
+
+  background: #fafbf7;
+
+  padding: 10px 14px;
+
+  text-align: left;
+
+  min-width: 130px;
+
+}
+
+
+.map .node b {
+
+  display: block;
+
+  font: 11px var(--mono);
+
+  color: #24343a;
+
+}
+
+
+.map .node span {
+
+  display: block;
+
+  margin-top: 3px;
+
+  font: 8px var(--mono);
+
+  color: #758084;
+
+}
+
+
+.map .web    { left: 4%;  top: 40%; }
+.map .api    { left: 30%; top: 40%; }
+.map .service{ left: 56%; top: 40%; }
+.map .db     { left: 84%; top: 40%; }
+.map .events { left: 40%; top: 76%; }
+.map .shared { left: 56%; top: 12%; }
+
+
+.inspector {
+
+  margin-top: 18px;
+
+  border: 1px solid var(--line);
+
+  background: #f8f9f5;
+
+  padding: 16px 18px;
+
+  color: #68757a;
+
+  font: 11px/1.7 var(--mono);
+
+}
+
+
+/* ============================================================
+   TASK IMPACT
+============================================================ */
+
+.impact-form label {
+
+  display: block;
+
+  margin-bottom: 9px;
+
+  color: #6b787c;
+
+  font: 10px var(--mono);
+
+  letter-spacing: .6px;
+
+}
+
+
+.impact-form > div {
+
+  display: flex;
+
+  gap: 8px;
+
+  max-width: 720px;
+
+}
+
+
+.impact-form input {
+
+  flex: 1;
+
+  min-width: 0;
+
+  height: 42px;
+
+  border: 1px solid var(--line);
+
+  background: var(--surface);
+
+  padding: 0 13px;
+
+  outline: none;
+
+  font: 11px var(--mono);
+
+  color: var(--ink);
+
+}
+
+
+.impact-form button {
+
+  border: 0;
+
+  background: var(--deep);
+
+  color: #fff;
+
+  padding: 0 18px;
+
+  font-size: 11px;
+
+  font-weight: 700;
+
+}
+
+
+.results {
+
+  margin-top: 20px;
+
+}
+
+
+/* ============================================================
+   LANDING PREVIEW
+============================================================ */
+
+.preview {
+
+  padding: 90px 5%;
+
+  border-top: 1px solid var(--line);
+
+}
+
+
+.preview .heading {
+
+  display: flex;
+
+  justify-content: space-between;
+
+  align-items: flex-end;
+
+  gap: 40px;
+
+  margin-bottom: 40px;
+
+}
+
+
+.preview .heading p {
+
+  max-width: 380px;
+
+  color: #657276;
+
+  font-size: 12px;
+
+  line-height: 1.8;
+
+}
+
+
+.canvas {
+
+  display: grid;
+
+  grid-template-columns: 220px 1fr;
+
+  border: 1px solid var(--line);
+
+  background: var(--surface);
+
+}
+
+
+.canvas aside {
+
+  padding: 20px;
+
+  border-right: 1px solid var(--line);
+
+  background: var(--surface-2);
+
+  font: 10px/2 var(--mono);
+
+  color: #58666a;
+
+}
+
+
+.canvas aside small,
+.diagram small {
+
+  color: #8b9591;
+
+  letter-spacing: .6px;
+
+}
+
+
+.diagram {
+
+  padding: 20px;
+
+}
+
+
+.diagram svg {
+
+  width: 100%;
+
+  height: auto;
+
+  margin-top: 14px;
+
+}
+
+
+.diagram svg path {
+
+  fill: none;
+
+  stroke: #aeb9b2;
+
+}
+
+
+.diagram svg rect {
+
+  fill: #fafbf7;
+
+  stroke: #aebbb3;
+
+}
+
+
+.diagram svg text {
+
+  font: 11px var(--mono);
+
+  fill: #24343a;
+
+}
+
+
+/* ============================================================
+   LEGAL PAGES
+
+   Hidden until the footer links open them.
+============================================================ */
+
+.legal-page {
+
+  display: none;
+
+  padding: 70px 5%;
+
+  border-top: 1px solid var(--line);
+
+}
+
+
+.legal-page.active {
+
+  display: block;
+
+}
+
+
+.legal-container {
+
+  max-width: 720px;
+
+}
+
+
+.legal-container h1 {
+
+  font-size: 44px;
+
+  letter-spacing: -2px;
+
+}
+
+
+.legal-container h2 {
+
+  margin: 34px 0 10px;
+
+  font-size: 17px;
+
+  letter-spacing: -.4px;
+
+}
+
+
+.legal-container p {
+
+  color: #59676c;
+
+  font-size: 13px;
+
+  line-height: 1.8;
+
+}
+
+
+.legal-date {
+
+  margin: 14px 0 30px;
+
+  color: #8b9591;
+
+  font: 9px var(--mono);
+
+  letter-spacing: .6px;
+
+}
+
+
+.back-home {
+
+  margin-bottom: 30px;
+
+  border: 1px solid var(--line);
+
+  background: transparent;
+
+  color: var(--muted);
+
+  padding: 8px 13px;
+
+  font: 10px var(--mono);
+
+}
+
+
+.back-home:hover {
+
+  color: var(--ink);
+
+  border-color: #8c9992;
+
+}
+
+
+/* ============================================================
+   RESPONSIVE FOR THE ABOVE
+============================================================ */
+
+@media (max-width: 900px) {
+
+  .metrics {
+
+    grid-template-columns: repeat(2, 1fr);
+
+  }
+
+
+  .grid,
+  .canvas {
+
+    grid-template-columns: 1fr;
+
+  }
+
+
+  .view-intro {
+
+    flex-direction: column;
+
+    align-items: flex-start;
+
+  }
+
+}
+
+
+@media (max-width: 700px) {
+
+  .tabs {
+
+    overflow-x: auto;
+
+  }
+
+
+  .metrics {
+
+    grid-template-columns: 1fr;
+
+  }
+
+
+  .map {
+
+    height: auto;
+
+    padding: 14px;
+
+  }
+
+
+  .map svg {
+
+    display: none;
+
+  }
+
+
+  .map .node {
+
+    position: static;
+
+    width: 100%;
+
+    margin-bottom: 8px;
+
+  }
+
+}
+
+
+/* ============================================================
+   SPLIT LAYOUT — files left, graph right
+============================================================ */
+
+.dep-layout {
+
+  grid-template-columns: 260px 1fr;
+
+  align-items: start;
+
+}
+
+
+/* The detail panel spans the full width beneath both. */
+.dep-layout .detail {
+
+  grid-column: 1 / -1;
+
+  margin-top: 0;
+
+}
+
+
+.dep-files {
+
+  display: flex;
+
+  flex-direction: column;
+
+  max-height: 596px;
+
+  overflow: hidden;
+
+}
+
+
+.dep-files .panel-title {
+
+  padding: 14px 15px;
+
+  border-bottom: 1px solid #d5dad4;
+
+}
+
+
+.level-files {
+
+  overflow-y: auto;
+
+  overflow-x: hidden;
+
+  flex: 1;
+
+  min-height: 0;
+
+}
+
+
+.level-file {
+
+  display: flex;
+
+  align-items: center;
+
+  gap: 8px;
+
+  width: 100%;
+
+  min-width: 0;
+
+  border: 0;
+
+  border-bottom: 1px solid #eceee8;
+
+  background: transparent;
+
+  color: #58666a;
+
+  padding: 8px 14px;
+
+  text-align: left;
+
+  font: 10px var(--mono);
+
+  white-space: nowrap;
+
+}
+
+
+.level-file:hover {
+
+  background: #eef2ec;
+
+  color: var(--ink);
+
+}
+
+
+.level-file.active {
+
+  background: #e3e9e2;
+
+  color: var(--ink);
+
+}
+
+
+.level-file-icon {
+
+  flex: 0 0 8px;
+
+  color: #8b9591;
+
+}
+
+
+.level-file-name {
+
+  flex: 1;
+
+  min-width: 0;
+
+  overflow: hidden;
+
+  text-overflow: ellipsis;
+
+}
+
+
+.level-file-note {
+
+  flex: 0 0 auto;
+
+  color: #a1aaa5;
+
+}
+
+
+@media (max-width: 900px) {
+
+  .dep-layout {
+
+    grid-template-columns: 1fr;
+
+  }
+
+
+  .dep-files {
+
+    max-height: 240px;
+
+  }
+
+}
+
+
+/* ============================================================
+   GRAPH REFINEMENTS
+
+   Edges are <path> now rather than <line>, and external packages
+   are visually quieter than repository files so a column of them
+   reads as background rather than as twelve equal subjects.
+============================================================ */
+
+.graph-edge {
+
+  fill: none;
+
+  stroke-linecap: round;
+
+}
+
+
+.edge-external {
+
+  stroke: #c3ccc6;
+
+  stroke-width: 1;
+
+  stroke-dasharray: 3 4;
+
+}
+
+
+.arrowhead.external {
+
+  fill: #c3ccc6;
+
+}
+
+
+.node-external .node-body {
+
+  fill: #f4f6f2;
+
+  stroke: #c3ccc6;
+
+  stroke-dasharray: none;
+
+}
+
+
+.node-external .graph-node-title {
+
+  fill: #6d7a75;
+
+  font-size: 10px;
+
+}
+
+
+/* The file under inspection should read as the subject of the view. */
+.role-selected .node-body {
+
+  fill: #e7ece6;
+
+  stroke: var(--deep);
+
+  stroke-width: 2;
+
+}
+
+
+.role-selected .graph-node-title {
+
+  fill: var(--ink);
+
+  font-weight: 500;
+
+}
+
+
+.role-importer .node-body {
+
+  fill: #fbfaf6;
+
+}
+
+
+.graph-node-title {
+
+  font: 11px var(--mono);
+
+}
+
+
+/* ============================================================
+   ARCHITECTURE PANE
+
+   The Architecture tab now holds the real progressive graph, built
+   with the same panel structure as Dependencies. The hardcoded
+   .map illustration it replaced is removed by the script.
+============================================================ */
+
+#architecture .dep-layout,
+#dependencies .dep-layout {
+
+  display: grid;
+
+}
+
+
+#architectureGraph {
+
+  height: 560px;
+
+}
+
+
+#architecture .dep-files {
+
+  max-height: 560px;
+
+}
+
+
+/* ============================================================
+   ARCHITECTURE GRAPH
+
+   Matches the "A map you can interrogate" mockup: flat boxes,
+   hairline strokes, monospace labels, right-angle connectors, and
+   no fill competing with the paper.
+============================================================ */
+
+#architectureGraph .node-body {
+
+  fill: var(--surface);
+
+  stroke: #9fada6;
+
+  stroke-width: 1;
+
+}
+
+
+#architectureGraph .node-directory .node-body,
+#architectureGraph .node-repository .node-body {
+
+  fill: var(--surface);
+
+}
+
+
+#architectureGraph .node-repository .node-body {
+
+  stroke: #6e8178;
+
+  stroke-width: 1.4;
+
+}
+
+
+#architectureGraph .graph-node:hover .node-body {
+
+  fill: #eef2ec;
+
+  stroke: #6e8178;
+
+}
+
+
+#architectureGraph .graph-node-title {
+
+  font: 12px var(--mono);
+
+  fill: #24343a;
+
+}
+
+
+#architectureGraph .graph-node-subtitle {
+
+  font: 9px var(--mono);
+
+  fill: #93a099;
+
+}
+
+
+/* Connectors: thin, square-cornered, no arrowheads. */
+#architectureGraph .graph-edge {
+
+  stroke: #b6c1ba;
+
+  stroke-width: 1;
+
+  stroke-linecap: butt;
+
+  stroke-linejoin: miter;
+
+}
+
+
+#architectureGraph .graph-edge.is-linked {
+
+  stroke: var(--accent);
+
+  stroke-width: 1.6;
+
+}
+
+
+#architectureGraph .is-important .node-body {
+
+  stroke: var(--accent);
+
+}
+
+
+/* ============================================================
+   COLLAPSED FILES
+
+   One node standing in for the loose files at a level. Dashed and
+   unfilled so it reads as a summary rather than a thing.
+============================================================ */
+
+.node-filegroup .node-body {
+
+  fill: transparent;
+
+  stroke: #a9b3ac;
+
+  stroke-dasharray: 3 3;
+
+}
+
+
+.node-filegroup .graph-node-title {
+
+  fill: #6d7a75;
+
+}
+
+
+.node-filegroup:hover .node-body {
+
+  stroke: var(--accent);
+
+}
+
+
+.node-filegroup:hover .graph-node-title {
+
+  fill: var(--accent);
+
+}
+
+
+/* ============================================================
+   MORE ROOM FOR THE STRUCTURAL VIEW
+============================================================ */
+
+#architectureGraph {
+
+  height: 620px;
+
+}
+
+
+#architecture .dep-files {
+
+  max-height: 620px;
+
+}
+
+
+#architecture .dep-layout {
+
+  grid-template-columns: 232px 1fr;
+
+}
+
+
+/* ============================================================
+   FILE PICKER
+
+   The Dependencies pane lists the files in the current folder so it
+   works on its own instead of sending the user to another tab.
+============================================================ */
+
+.picker-heading {
+
+  padding: 10px 14px 8px;
+
+  border-bottom: 1px solid #e0e4de;
+
+  color: #93a099;
+
+  font: 9px var(--mono);
+
+  letter-spacing: .5px;
+
+  overflow: hidden;
+
+  text-overflow: ellipsis;
+
+  white-space: nowrap;
+
+}
+
+
+/* ============================================================
+   IMPORTS COLUMN COUNT
+============================================================ */
+
+.column-count {
+
+  margin-bottom: 8px;
+
+  color: #93a099;
+
+  font: 9px var(--mono);
+
+  letter-spacing: .4px;
+
+}
+
+
+/* The open file stays visible in the picker. */
+.level-file.active .level-file-icon {
+
+  color: var(--accent);
+
+}

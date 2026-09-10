@@ -1,0 +1,18 @@
+# secrets
+.env
+backend/.env
+
+# python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+.pytest_cache/
+
+# node
+node_modules/
+
+# os
+.DS_Store
+Thumbs.db

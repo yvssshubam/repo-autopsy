@@ -1,0 +1,1695 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+  <title>Repo Autopsy</title>
+
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+
+  <link
+    href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Manrope:wght@400;500;600;700;800&display=swap"
+    rel="stylesheet"
+  >
+
+  <link rel="stylesheet" href="css/style.css">
+  <link rel="stylesheet" href="css/graph-ui.css">
+
+</head>
+
+
+<body>
+
+
+<div class="shell">
+
+
+  <!-- ================================
+       HEADER
+  ================================= -->
+
+  <header>
+
+    <a
+      class="brand"
+      href="#"
+      id="homeLink"
+    >
+
+      <span class="mark">
+        RA
+      </span>
+
+      Repo Autopsy
+
+    </a>
+
+
+    <nav>
+
+      <a href="#product">
+        Product
+      </a>
+
+      <a href="#analyze">
+        Analyze repository
+      </a>
+
+      <a href="#docs">
+        Documentation
+      </a>
+
+      <a
+        href="https://github.com"
+        target="_blank"
+        rel="noopener noreferrer"
+      >
+        GitHub ↗
+      </a>
+
+      <a href="#about">
+        About
+      </a>
+
+    </nav>
+
+
+    <button
+      class="action"
+      id="open"
+    >
+      Open analyzer
+    </button>
+
+  </header>
+
+
+  <!-- ================================
+       MAIN
+  ================================= -->
+
+  <main id="mainContent">
+
+
+    <!-- HERO -->
+
+    <section
+      class="hero"
+      id="product"
+    >
+
+      <div class="eyebrow">
+
+        <i></i>
+
+        REPOSITORY INTELLIGENCE
+
+      </div>
+
+
+      <h1>
+
+        Understand unfamiliar<br>
+
+        codebases in minutes.
+
+      </h1>
+
+
+      <p>
+
+        Repo Autopsy maps a repository's structure,
+        dependencies, and change surface so engineers
+        can move with context.
+
+      </p>
+
+
+      <form
+        class="repo-form"
+        id="repoForm"
+      >
+
+        <label>
+          GITHUB REPOSITORY URL
+        </label>
+
+
+        <div class="input-row">
+
+          <input
+            id="repoUrl"
+            value="https://github.com/facebook/react"
+            required
+          >
+
+
+          <button type="submit">
+            Analyze repository
+          </button>
+
+        </div>
+
+
+        <p class="form-note">
+
+          Public repositories only · Analysis runs
+          in an isolated workspace
+
+        </p>
+
+      </form>
+
+    </section>
+
+
+    <!-- WORKFLOW -->
+
+    <section
+      class="workflow"
+      id="analyze"
+    >
+
+      <div class="step">
+
+        <b>01</b>
+
+        <span>
+          Repository
+        </span>
+
+        <small>
+          Source & metadata
+        </small>
+
+      </div>
+
+
+      <div class="connector"></div>
+
+
+      <div class="step">
+
+        <b>02</b>
+
+        <span>
+          Analysis
+        </span>
+
+        <small>
+          Parse & resolve
+        </small>
+
+      </div>
+
+
+      <div class="connector"></div>
+
+
+      <div class="step">
+
+        <b>03</b>
+
+        <span>
+          Architecture
+        </span>
+
+        <small>
+          Map relationships
+        </small>
+
+      </div>
+
+
+      <div class="connector"></div>
+
+
+      <div class="step">
+
+        <b>04</b>
+
+        <span>
+          Understanding
+        </span>
+
+        <small>
+          Plan a change
+        </small>
+
+      </div>
+
+    </section>
+
+
+    <!-- PREVIEW -->
+
+    <section class="preview">
+
+      <div class="heading">
+
+        <div>
+
+          <div class="eyebrow">
+
+            <i></i>
+
+            LIVE WORKSPACE
+
+          </div>
+
+
+          <h2>
+            A map you can interrogate.
+          </h2>
+
+        </div>
+
+
+        <p>
+
+          From the entry point to the test that protects it,
+          every relationship remains inspectable.
+
+        </p>
+
+      </div>
+
+
+      <div class="canvas">
+
+
+        <aside>
+
+          <small>
+            MODULES
+          </small>
+
+          <br>
+
+          <b>
+            ▾ apps/web
+          </b>
+
+          <br>
+
+          　▾ app
+
+          <br>
+
+          　　page.tsx
+
+          <br>
+
+          　　api/auth
+
+          <br>
+
+          　　layout.tsx
+
+          <br>
+
+          　▸ components
+
+          <br>
+
+          　▸ lib
+
+          <br>
+
+          ▸ packages
+
+        </aside>
+
+
+        <div class="diagram">
+
+          <small>
+            AUTHENTICATION FLOW
+          </small>
+
+
+          <svg viewBox="0 0 700 250">
+
+            <path d="
+              M123 125H225
+              M337 125H445
+              M557 125H635
+              M281 165V212H490
+              M125 98V48H491V98
+            " />
+
+
+            <rect
+              x="24"
+              y="98"
+              width="101"
+              height="54"
+            />
+
+
+            <rect
+              x="225"
+              y="98"
+              width="112"
+              height="54"
+            />
+
+
+            <rect
+              x="445"
+              y="98"
+              width="112"
+              height="54"
+            />
+
+
+            <rect
+              x="635"
+              y="98"
+              width="55"
+              height="54"
+            />
+
+
+            <rect
+              x="281"
+              y="192"
+              width="209"
+              height="40"
+            />
+
+
+            <text
+              x="74"
+              y="130"
+            >
+              Web
+            </text>
+
+
+            <text
+              x="246"
+              y="130"
+            >
+              API routes
+            </text>
+
+
+            <text
+              x="465"
+              y="130"
+            >
+              Auth service
+            </text>
+
+
+            <text
+              x="645"
+              y="130"
+            >
+              DB
+            </text>
+
+
+            <text
+              x="314"
+              y="217"
+            >
+              Session & token store
+            </text>
+
+          </svg>
+
+        </div>
+
+      </div>
+
+    </section>
+
+
+    <!-- USE CASES -->
+
+    <section
+      class="use"
+      id="docs"
+    >
+
+      <div>
+
+        <small class="eyebrow">
+
+          <i></i>
+
+          01 / CONTEXT
+
+        </small>
+
+
+        <h2>
+          Trace a question to its answer.
+        </h2>
+
+      </div>
+
+
+      <div class="use-list">
+
+
+        <article>
+
+          <span>
+            STRUCTURE
+          </span>
+
+
+          <h3>
+            Read the codebase as a system.
+          </h3>
+
+
+          <p>
+
+            Locate boundaries, ownership patterns,
+            and important modules before opening
+            a pull request.
+
+          </p>
+
+        </article>
+
+
+        <article>
+
+          <span>
+            DEPENDENCIES
+          </span>
+
+
+          <h3>
+            See what a file can affect.
+          </h3>
+
+
+          <p>
+
+            Follow imports and callers through
+            the repository, including critical paths.
+
+          </p>
+
+        </article>
+
+
+        <article>
+
+          <span>
+            CHANGE PLANNING
+          </span>
+
+
+          <h3>
+            Scope a task with evidence.
+          </h3>
+
+
+          <p>
+
+            Turn a plain-language change into a
+            reviewable list of code and tests to inspect.
+
+          </p>
+
+        </article>
+
+
+      </div>
+
+    </section>
+
+
+  </main>
+
+
+  <!-- ================================
+       PRIVACY POLICY
+  ================================= -->
+
+  <section
+    class="legal-page"
+    id="privacyPage"
+  >
+
+    <div class="legal-container">
+
+
+      <button
+        class="back-home"
+        onclick="showHome()"
+      >
+        ← Back to Repo Autopsy
+      </button>
+
+
+      <div class="eyebrow">
+
+        <i></i>
+
+        LEGAL
+
+      </div>
+
+
+      <h1>
+        Privacy Policy
+      </h1>
+
+
+      <div class="legal-date">
+
+        LAST UPDATED: AUGUST 20, 2026
+
+      </div>
+
+
+      <p>
+
+        This Privacy Policy explains how Repo Autopsy handles
+        information when you use the service.
+
+      </p>
+
+
+      <h2>
+        1. Information We Collect
+      </h2>
+
+
+      <p>
+
+        Repo Autopsy may process information that you voluntarily
+        provide when using the service, including repository URLs
+        and information necessary to analyze public repositories.
+
+      </p>
+
+
+      <h2>
+        2. Repository Information
+      </h2>
+
+
+      <p>
+
+        When you submit a public GitHub repository, the service may
+        retrieve publicly available repository information such as
+        file names, source code, metadata, dependencies, and repository
+        structure for the purpose of analysis.
+
+      </p>
+
+
+      <h2>
+        3. How Information Is Used
+      </h2>
+
+
+      <p>
+
+        Information processed by Repo Autopsy is used to provide
+        repository analysis, generate architectural insights,
+        identify dependencies, and provide requested product features.
+
+      </p>
+
+
+      <h2>
+        4. Data Retention
+      </h2>
+
+
+      <p>
+
+        Repository analysis data may be temporarily stored while an
+        analysis is being performed. Retention periods may change as
+        the service develops.
+
+      </p>
+
+
+      <h2>
+        5. Third-Party Services
+      </h2>
+
+
+      <p>
+
+        Repo Autopsy may use third-party services such as GitHub APIs
+        or infrastructure providers to provide the service.
+
+      </p>
+
+
+      <h2>
+        6. Security
+      </h2>
+
+
+      <p>
+
+        We take reasonable measures to protect information processed
+        through the service. However, no internet service can guarantee
+        absolute security.
+
+      </p>
+
+
+      <h2>
+        7. Changes to This Policy
+      </h2>
+
+
+      <p>
+
+        This policy may be updated as Repo Autopsy evolves.
+
+      </p>
+
+
+      <h2>
+        8. Contact
+      </h2>
+
+
+      <p>
+
+        For questions about this Privacy Policy, contact the
+        Repo Autopsy team through the project's official repository.
+
+      </p>
+
+
+    </div>
+
+  </section>
+
+
+  <!-- ================================
+       TERMS
+  ================================= -->
+
+  <section
+    class="legal-page"
+    id="termsPage"
+  >
+
+    <div class="legal-container">
+
+
+      <button
+        class="back-home"
+        onclick="showHome()"
+      >
+        ← Back to Repo Autopsy
+      </button>
+
+
+      <div class="eyebrow">
+
+        <i></i>
+
+        LEGAL
+
+      </div>
+
+
+      <h1>
+        Terms of Service
+      </h1>
+
+
+      <div class="legal-date">
+
+        LAST UPDATED: AUGUST 20, 2026
+
+      </div>
+
+
+      <p>
+
+        By using Repo Autopsy, you agree to these Terms of Service.
+
+      </p>
+
+
+      <h2>
+        1. Use of the Service
+      </h2>
+
+
+      <p>
+
+        Repo Autopsy provides software-development tools for
+        analyzing software repositories. You agree to use the
+        service only for lawful purposes.
+
+      </p>
+
+
+      <h2>
+        2. Repository Access
+      </h2>
+
+
+      <p>
+
+        You should only submit repositories that you are authorized
+        to analyze. The initial version of Repo Autopsy is intended
+        primarily for public repositories.
+
+      </p>
+
+
+      <h2>
+        3. Acceptable Use
+      </h2>
+
+
+      <p>
+
+        You must not use Repo Autopsy to intentionally disrupt the
+        service, circumvent security controls, access unauthorized
+        information, or interfere with other users.
+
+      </p>
+
+
+      <h2>
+        4. Third-Party Repositories
+      </h2>
+
+
+      <p>
+
+        Repository content remains subject to the licenses and terms
+        applicable to the original repository.
+
+      </p>
+
+
+      <h2>
+        5. Intellectual Property
+      </h2>
+
+
+      <p>
+
+        Repo Autopsy's own software, branding, interface, and original
+        materials remain the property of their respective owners unless
+        otherwise stated.
+
+      </p>
+
+
+      <h2>
+        6. Availability
+      </h2>
+
+
+      <p>
+
+        Repo Autopsy is provided on an evolving basis. Features may
+        be modified, suspended, or discontinued as the product develops.
+
+      </p>
+
+
+      <h2>
+        7. Disclaimer
+      </h2>
+
+
+      <p>
+
+        Repository analysis results are provided as engineering
+        assistance and should be independently reviewed before being
+        used for production decisions.
+
+      </p>
+
+
+      <h2>
+        8. Changes to These Terms
+      </h2>
+
+
+      <p>
+
+        These Terms may be updated as the service evolves.
+
+      </p>
+
+
+      <h2>
+        9. Contact
+      </h2>
+
+
+      <p>
+
+        Questions about these Terms can be directed to the Repo
+        Autopsy project through its official repository.
+
+      </p>
+
+
+    </div>
+
+  </section>
+
+
+  <!-- ================================
+       FOOTER
+  ================================= -->
+
+  <footer id="about">
+
+
+    <div>
+
+      <a
+        class="brand"
+        href="#"
+        onclick="showHome(); return false;"
+      >
+
+        <span class="mark">
+          RA
+        </span>
+
+        Repo Autopsy
+
+      </a>
+
+
+      <p>
+
+        Codebase intelligence for engineers joining,
+        changing, and maintaining software.
+
+      </p>
+
+    </div>
+
+
+    <div class="footer-links">
+
+      <a
+        href="#privacy"
+        id="privacyLink"
+      >
+        Privacy Policy
+      </a>
+
+
+      <a
+        href="#terms"
+        id="termsLink"
+      >
+        Terms of Service
+      </a>
+
+    </div>
+
+
+  </footer>
+
+</div>
+
+
+<!-- ================================
+     ANALYZER
+================================= -->
+
+<section
+  class="analyzer"
+  id="analyzer"
+  hidden
+>
+
+
+  <!-- TOP BAR -->
+
+  <div class="topbar">
+
+
+    <div class="brand">
+
+      <span class="mark">
+        RA
+      </span>
+
+      Repo Autopsy
+
+    </div>
+
+
+    <div class="crumb">
+
+      <i class="dot"></i>
+
+
+      <b id="repoName">
+        acme / atlas-web
+      </b>
+
+
+      <span>
+        main
+      </span>
+
+
+      <span id="branchName">
+        repository
+      </span>
+
+    </div>
+
+
+    <button
+      class="close"
+      id="close"
+    >
+      Close workspace
+    </button>
+
+
+  </div>
+
+
+  <div class="body">
+
+
+    <!-- EXPLORER -->
+
+    <aside class="explorer">
+
+
+      <div class="panel-title">
+
+        EXPLORER
+
+      </div>
+
+
+      <div
+        class="tree"
+        id="tree"
+      ></div>
+
+
+      <div
+        class="facts"
+        id="facts"
+      >
+
+        WAITING FOR REPOSITORY
+
+      </div>
+
+
+    </aside>
+
+
+    <!-- WORKSPACE -->
+
+    <main class="workspace">
+
+
+      <!-- TABS -->
+
+      <div class="tabs">
+
+
+        <button
+          class="active"
+          data-tab="overview"
+        >
+          Overview
+        </button>
+
+
+        <button
+          data-tab="architecture"
+        >
+          Architecture
+        </button>
+
+
+        <button
+          data-tab="dependencies"
+        >
+          Dependencies
+        </button>
+
+
+        <button
+          data-tab="impact"
+        >
+          Task impact
+        </button>
+
+
+      </div>
+
+
+      <!-- ================================
+           OVERVIEW
+      ================================= -->
+
+      <section
+        class="view active"
+        id="overview"
+      >
+
+
+        <div class="view-intro">
+
+
+          <div>
+
+
+            <div class="eyebrow">
+
+              <i></i>
+
+              REPOSITORY OVERVIEW
+
+            </div>
+
+
+            <h2 id="project">
+              atlas-web
+            </h2>
+
+
+            <p id="projectDescription">
+
+              Real repository metadata will appear here
+              after the GitHub repository is loaded.
+
+            </p>
+
+
+          </div>
+
+
+        </div>
+
+
+        <!-- METRICS -->
+
+        <div class="metrics">
+
+
+          <div>
+
+            <span>
+              FILES
+            </span>
+
+
+            <b id="metricFiles">
+              —
+            </b>
+
+
+            <small>
+              Real repository files
+            </small>
+
+          </div>
+
+
+          <div>
+
+            <span>
+              SYMBOLS
+            </span>
+
+
+            <b>
+              —
+            </b>
+
+
+            <small>
+              Coming next
+            </small>
+
+          </div>
+
+
+          <div>
+
+            <span>
+              DEPENDENCIES
+            </span>
+
+
+            <b>
+              —
+            </b>
+
+
+            <small>
+              Coming later
+            </small>
+
+          </div>
+
+
+          <div>
+
+            <span>
+              TEST COVERAGE
+            </span>
+
+
+            <b>
+              —
+            </b>
+
+
+            <small>
+              Coming later
+            </small>
+
+          </div>
+
+
+        </div>
+
+
+        <div class="grid">
+
+
+          <!-- MODULES -->
+
+          <section class="panel">
+
+
+            <div class="panel-title">
+
+              IMPORTANT MODULES
+
+            </div>
+
+
+            <div id="modules">
+
+              <div
+                style="
+                  padding:15px;
+                  font:11px var(--mono);
+                  color:#68757a;
+                "
+              >
+
+                Repository analysis will populate
+                this section.
+
+              </div>
+
+            </div>
+
+
+          </section>
+
+
+          <!-- FILE VIEWER -->
+
+          <section class="panel">
+
+
+            <div
+              class="panel-title"
+              id="codePath"
+            >
+
+              SELECT A FILE
+
+            </div>
+
+
+            <pre
+              class="code"
+              id="code"
+            >Select a file from the Explorer.
+
+File contents will be loaded in the next feature.</pre>
+
+
+          </section>
+
+
+        </div>
+
+
+      </section>
+
+
+      <!-- ================================
+           ARCHITECTURE
+      ================================= -->
+
+      <section
+        class="view"
+        id="architecture"
+      >
+
+
+        <div class="view-intro">
+
+
+          <div>
+
+
+            <div class="eyebrow">
+
+              <i></i>
+
+              SYSTEM MAP
+
+            </div>
+
+
+            <h2>
+              Architecture
+            </h2>
+
+
+            <p>
+
+              Runtime boundaries and direct calls
+              discovered from the repository.
+
+            </p>
+
+
+          </div>
+
+
+        </div>
+
+
+        <div class="map">
+
+
+          <svg viewBox="0 0 920 420">
+
+
+            <path d="
+              M185 193H325
+              M455 193H594
+              M730 193H845
+              M390 246V330H662
+              M118 245V350H390
+              M455 165V80H662V165
+            "/>
+
+
+          </svg>
+
+
+          <button
+            class="node web"
+            data-name="Web application"
+          >
+
+            <b>
+              apps/web
+            </b>
+
+            <span>
+              Next.js routes
+            </span>
+
+          </button>
+
+
+          <button
+            class="node api"
+            data-name="API layer"
+          >
+
+            <b>
+              api
+            </b>
+
+            <span>
+              Route handlers
+            </span>
+
+          </button>
+
+
+          <button
+            class="node service"
+            data-name="Service layer"
+          >
+
+            <b>
+              services
+            </b>
+
+            <span>
+              Auth · billing · events
+            </span>
+
+          </button>
+
+
+          <button
+            class="node db"
+            data-name="Database"
+          >
+
+            <b>
+              database
+            </b>
+
+            <span>
+              Database
+            </span>
+
+          </button>
+
+
+          <button
+            class="node events"
+            data-name="Event queue"
+          >
+
+            <b>
+              events
+            </b>
+
+            <span>
+              Async jobs
+            </span>
+
+          </button>
+
+
+          <button
+            class="node shared"
+            data-name="Shared packages"
+          >
+
+            <b>
+              packages/shared
+            </b>
+
+            <span>
+              Contracts
+            </span>
+
+          </button>
+
+
+        </div>
+
+
+        <div
+          class="inspector"
+          id="inspector"
+        >
+
+          Select a boundary to inspect its relationships.
+
+        </div>
+
+
+      </section>
+
+
+      <!-- ================================
+           DEPENDENCIES
+      ================================= -->
+
+      <section
+        class="view"
+        id="dependencies"
+      >
+
+
+        <div class="view-intro">
+
+
+          <div>
+
+
+            <div class="eyebrow">
+
+              <i></i>
+
+              IMPORT GRAPH
+
+            </div>
+
+
+            <h2>
+              Dependency paths
+            </h2>
+
+
+            <p>
+
+              Dependency analysis will be enabled
+              after source files are retrieved.
+
+            </p>
+
+
+          </div>
+
+
+          <label class="search">
+
+            ⌕
+
+            <input
+              id="filter"
+              placeholder="Filter modules"
+            >
+
+          </label>
+
+
+        </div>
+
+
+        <div class="dep-layout">
+
+          <section class="panel dep-graph-panel">
+
+            <div class="graph-toolbar">
+              <div>
+                <div class="panel-title">DEPENDENCY GRAPH</div>
+                <div class="graph-stats">
+                  <span><b id="depNodeCount">—</b> nodes</span>
+                  <span><b id="depEdgeCount">—</b> edges</span>
+                </div>
+              </div>
+              <button class="graph-reset" id="resetGraph" type="button">Reset view</button>
+            </div>
+
+            <div class="graph-canvas" id="dependencyGraph">
+              <div class="graph-empty">
+                Analyze a repository to load its dependency graph.
+              </div>
+            </div>
+
+          </section>
+
+          <section class="panel detail" id="deps">
+
+
+            <div class="panel-title">
+
+              SELECTED MODULE
+
+            </div>
+
+
+            <h3 id="depTitle">
+
+              —
+
+            </h3>
+
+
+            <p id="depDesc">
+
+              Real dependencies will be calculated
+              from source files later.
+
+            </p>
+
+
+            <div class="columns">
+
+
+              <div>
+
+                IMPORTS
+
+                <ul id="imports">
+
+                  <li>
+                    —
+                  </li>
+
+                </ul>
+
+              </div>
+
+
+              <div>
+
+                IMPORTED BY
+
+                <ul id="usedBy">
+
+                  <li>
+                    —
+                  </li>
+
+                </ul>
+
+              </div>
+
+
+            </div>
+
+
+          </section>
+
+
+        </div>
+
+
+      </section>
+
+
+      <!-- ================================
+           TASK IMPACT
+      ================================= -->
+
+      <section
+        class="view"
+        id="impact"
+      >
+
+
+        <div class="view-intro">
+
+
+          <div>
+
+
+            <div class="eyebrow">
+
+              <i></i>
+
+              CHANGE EXPLORER
+
+            </div>
+
+
+            <h2>
+              Task impact analysis
+            </h2>
+
+
+            <p>
+
+              Describe a change. Real impact analysis
+              will be enabled after code analysis.
+
+            </p>
+
+
+          </div>
+
+
+        </div>
+
+
+        <form
+          class="impact-form"
+          id="impactForm"
+        >
+
+
+          <label>
+            WHAT ARE YOU CHANGING?
+          </label>
+
+
+          <div>
+
+
+            <input
+              id="task"
+              value="Add Google OAuth"
+            >
+
+
+            <button type="submit">
+              Analyze impact
+            </button>
+
+
+          </div>
+
+
+        </form>
+
+
+        <div
+          class="results"
+          id="results"
+        ></div>
+
+
+      </section>
+
+
+    </main>
+
+  </div>
+
+</section>
+
+
+<script src="js/script.js"></script>
+
+<button
+    id="backToDependencyOverview"
+    type="button"
+>
+    ← Back
+</button>
+
+<button
+    id="resetGraph"
+    type="button"
+>
+    Reset
+</button>
+
+</body>
+</html>
