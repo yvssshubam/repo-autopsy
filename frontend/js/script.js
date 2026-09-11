@@ -92,6 +92,10 @@ const state = {
   /* Where the structural graph was when the user left it. */
   lastArchitecturePath: "",
 
+  /* Narrows the Dependencies file list to one folder. Set by clicking
+     a folder in the explorer while on that tab. */
+  pickerFolder: "",
+
   camera: { x: 0, y: 0, scale: 1 },
 
   /* Aborts the previous in-flight request when the user clicks ahead. */
@@ -1460,10 +1464,11 @@ function nodeSubtitle(node) {
   if (node.type === "more") return "click to reveal";
   if (node.type === "filegroup") return "click to show them";
 
-  /* External packages say what they are through their shape and the
-     column they sit in; a repeated "external package" caption under
-     a dozen of them is noise. */
-  if (node.type === "external") return "";
+  /* A grouped node must say how much it stands for, otherwise the
+     tidier graph is just a less informative one. */
+  if (node.type === "external") {
+    return node.count > 1 ? plural(node.count, "import") : "";
+  }
 
   if (node.isParent) return "back to parent";
 
@@ -1476,6 +1481,10 @@ function nodeSubtitle(node) {
 
   if (node.role === "selected") return "selected";
   if (node.role === "importer") return "imports this";
+
+  if (node.role === "import" && node.count > 1) {
+    return plural(node.count, "import");
+  }
 
   return node.language || "";
 }
@@ -1972,6 +1981,17 @@ function treeRow(entry, depth, expanded) {
       }
 
       renderTree();
+
+      /* On the Dependencies tab a folder is not something to open, it
+         is a way to narrow the list of files you can trace. Opening
+         the structural graph here would throw the user into the other
+         tab, which is not what clicking a folder should do. */
+      if (state.tab === "dependencies") {
+        state.pickerFolder = entry.path;
+        renderDependencyPicker();
+        return;
+      }
+
       loadArchitecture(entry.path);
       return;
     }
@@ -2508,8 +2528,11 @@ function renderDependencyPicker() {
      happens to be showing. Tying this list to the other tab meant you
      had to leave to find anything. */
   const filter = state.graphFilter.trim().toLowerCase();
+  const folder = state.pickerFolder;
+  const prefix = folder ? `${folder}/` : "";
 
   const all = state.tree.files.filter(path => {
+    if (folder && !path.startsWith(prefix)) return false;
     if (!filter) return true;
     return path.toLowerCase().includes(filter);
   });
@@ -2521,7 +2544,9 @@ function renderDependencyPicker() {
       `<div class="tree-loading">${
         filter
           ? `No file matches “${escapeHtml(filter)}”.`
-          : "Analyze a repository to list its files."
+          : folder
+            ? `No readable files in ${escapeHtml(folder)}.`
+            : "Analyze a repository to list its files."
       }</div>`;
     return;
   }
@@ -2530,10 +2555,33 @@ function renderDependencyPicker() {
 
   const heading = document.createElement("div");
   heading.className = "picker-heading";
-  heading.textContent =
+
+  const count =
     all.length > files.length
-      ? `${files.length} of ${all.length} files — filter to narrow`
+      ? `${files.length} of ${all.length} files`
       : plural(all.length, "file");
+
+  if (folder) {
+
+    heading.textContent = `${count} in ${folder}`;
+
+    const clear = document.createElement("button");
+    clear.type = "button";
+    clear.className = "picker-clear";
+    clear.textContent = "show all";
+
+    clear.addEventListener("click", event => {
+      event.preventDefault();
+      state.pickerFolder = "";
+      renderDependencyPicker();
+    });
+
+    heading.appendChild(clear);
+
+  } else {
+    heading.textContent = count;
+  }
+
   container.appendChild(heading);
 
   /* Keep the open file in view even when it is far down the list. */
@@ -2894,6 +2942,221 @@ function renderImportantModules() {
 
 
 /* ============================================================
+   TASK IMPACT
+
+   A run is a dozen model calls and up to ten file reads, so it takes
+   tens of seconds. The steps are shown as they are reported rather
+   than hidden behind a spinner: watching what it opened is most of
+   how you judge whether to trust the answer.
+============================================================ */
+
+let impactRunning = false;
+
+function renderImpactStatus(message) {
+
+  setHtml("#results", `
+    <div class="impact-status">
+      <div class="loading-title">${escapeHtml(message)}</div>
+      <div class="loading-bar"></div>
+      <p class="impact-note">
+        Searching the repository and reading candidate files. This
+        usually takes twenty to forty seconds.
+      </p>
+    </div>
+  `);
+}
+
+const STEP_LABELS = {
+  search_repository: "Searched for",
+  read_file: "Read",
+  get_dependencies: "Traced dependencies of",
+  report_impact: "Finished"
+};
+
+function renderImpact(data) {
+
+  const container = $("#results");
+  if (!container) return;
+
+  container.innerHTML = "";
+
+  if (data.summary) {
+    const summary = document.createElement("p");
+    summary.className = "impact-summary";
+    summary.textContent = data.summary;
+    container.appendChild(summary);
+  }
+
+  if (data.incomplete) {
+    const note = document.createElement("p");
+    note.className = "impact-note";
+    note.textContent = data.reason || "No conclusion was reached.";
+    container.appendChild(note);
+  }
+
+  if (data.files && data.files.length) {
+
+    const heading = document.createElement("div");
+    heading.className = "detail-label";
+    heading.textContent = "FILES TO LOOK AT";
+    container.appendChild(heading);
+
+    const list = document.createElement("div");
+    list.className = "impact-files";
+
+    data.files.forEach(file => {
+
+      const row = document.createElement("button");
+      row.type = "button";
+      row.className = `impact-file confidence-${file.confidence}`;
+      row.title = `Open ${file.path}`;
+
+      const path = document.createElement("span");
+      path.className = "impact-path";
+      path.textContent = file.path;
+
+      const badge = document.createElement("span");
+      badge.className = "impact-confidence";
+      badge.textContent = file.confidence;
+
+      const reason = document.createElement("span");
+      reason.className = "impact-reason";
+      reason.textContent = file.reason;
+
+      const top = document.createElement("span");
+      top.className = "impact-file-top";
+      top.appendChild(path);
+      top.appendChild(badge);
+
+      row.appendChild(top);
+      row.appendChild(reason);
+
+      /* Every claim is checkable: the row opens that file's graph. */
+      row.addEventListener("click", event => {
+        event.preventDefault();
+        loadFileDependencies(file.path);
+      });
+
+      list.appendChild(row);
+    });
+
+    container.appendChild(list);
+  }
+
+  if (data.unknowns) {
+    const note = document.createElement("p");
+    note.className = "impact-note";
+    note.textContent = `Not determined: ${data.unknowns}`;
+    container.appendChild(note);
+  }
+
+  if (data.steps && data.steps.length) {
+
+    const details = document.createElement("details");
+    details.className = "impact-steps";
+
+    const toggle = document.createElement("summary");
+    toggle.textContent = `How it got there (${data.steps.length} steps, ${
+      data.filesRead || 0
+    } files read)`;
+    details.appendChild(toggle);
+
+    data.steps.forEach(step => {
+      const line = document.createElement("div");
+      line.className = "impact-step";
+      line.textContent = `${STEP_LABELS[step.tool] || step.tool} ${
+        step.detail || ""
+      }`;
+      details.appendChild(line);
+    });
+
+    container.appendChild(details);
+  }
+
+  if (data.dropped) {
+    const note = document.createElement("p");
+    note.className = "impact-note";
+    note.textContent =
+      `${plural(data.dropped, "suggested path")} did not exist in this ` +
+      "repository and were left out.";
+    container.appendChild(note);
+  }
+}
+
+function initImpact() {
+
+  const form = $("#impactForm");
+  if (!form) return;
+
+  form.addEventListener("submit", async event => {
+
+    event.preventDefault();
+    event.stopPropagation();
+
+    if (impactRunning) return;
+
+    const input = $("#task");
+    const task = input ? input.value.trim() : "";
+
+    if (!task) return;
+
+    if (!state.repo.owner) {
+      setHtml("#results",
+        `<p class="impact-note">Analyze a repository first.</p>`);
+      return;
+    }
+
+    const button = form.querySelector("button[type=submit]");
+    const original = button ? button.textContent : "";
+
+    impactRunning = true;
+
+    if (button) {
+      button.disabled = true;
+      button.textContent = "Working…";
+    }
+
+    renderImpactStatus("Working out what this change touches");
+
+    try {
+
+      const response = await fetch(`${API_BASE}/api/impact`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          owner: state.repo.owner,
+          repo: state.repo.repo,
+          branch: state.repo.branch,
+          task
+        })
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        setHtml("#results", `<p class="impact-note">${
+          escapeHtml(data.detail || `Failed (HTTP ${response.status}).`)
+        }</p>`);
+        return;
+      }
+
+      renderImpact(data);
+
+    } catch (error) {
+      setHtml("#results",
+        `<p class="impact-note">${escapeHtml(error.message)}</p>`);
+    } finally {
+      impactRunning = false;
+      if (button) {
+        button.disabled = false;
+        button.textContent = original;
+      }
+    }
+  });
+}
+
+
+/* ============================================================
    KEYBOARD
 ============================================================ */
 
@@ -2949,6 +3212,7 @@ ensureSplitLayout();
 initTabs();
 initLegalPages();
 initModuleFilter();
+initImpact();
 ensureToolbar();
 initCameraControls();
 updateNavigationControls();

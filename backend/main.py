@@ -12,6 +12,7 @@ bounded, explicitly-scoped scan.
 
 import os
 import re
+import json
 import ast
 import time
 import base64
@@ -199,6 +200,12 @@ RATE_BUCKETS = {
     "cheap": (
         int(os.getenv("CHEAP_RPM", "120")),
         int(os.getenv("CHEAP_RPD", "4000")),
+    ),
+    # One run is a dozen model calls and up to ten file reads, so this
+    # is deliberately the tightest bucket.
+    "agent": (
+        int(os.getenv("AGENT_RPM", "3")),
+        int(os.getenv("AGENT_RPD", "25")),
     ),
 }
 
@@ -909,6 +916,109 @@ def resolve_java_import(imported: str, file_path: str, repository_files: set):
     return None
 
 
+RUST_BUILTIN_ROOTS = {"std", "core", "alloc", "proc_macro", "test"}
+
+
+def rust_crate_source_root(file_path: str) -> str | None:
+    """The `src` directory of the crate a file belongs to."""
+
+    parts = file_path.split("/")
+
+    for index in range(len(parts) - 1, -1, -1):
+        if parts[index] == "src":
+            return "/".join(parts[: index + 1])
+
+    return None
+
+
+def resolve_rust_import(imported: str, file_path: str, repository_files: set):
+    """Rust `use` paths were all being treated as third-party crates.
+
+    In a workspace like react's compiler most of them are crates in the
+    same repository, so a file that imports eighteen things from
+    `react_compiler_ast` drew eighteen external nodes instead of one
+    dependency on that crate's lib.rs."""
+
+    # "foo::bar::{A, B}" and "foo::bar as baz" both describe one target.
+    path = imported.split("{")[0].split(" as ")[0].strip().strip(":")
+
+    segments = [part for part in path.split("::") if part]
+
+    if not segments:
+        return None
+
+    first = segments[0]
+
+    if first in RUST_BUILTIN_ROOTS:
+        return None
+
+    source_root = rust_crate_source_root(file_path)
+
+    # Paths inside the current crate.
+    if first in ("crate", "self", "super"):
+
+        rest = segments[1:]
+
+        # Rust's module tree is not the directory tree. A file
+        # src/program.rs is the module `program`, so `super` from
+        # inside it means src/, not the directory above src/.
+        directory = "/".join(file_path.split("/")[:-1])
+        stem = file_path.split("/")[-1].removesuffix(".rs")
+
+        if stem in ("mod", "lib", "main"):
+            self_base = directory
+            super_base = "/".join(directory.split("/")[:-1])
+        else:
+            self_base = f"{directory}/{stem}"
+            super_base = directory
+
+        if first == "super":
+            base = super_base
+        elif first == "self":
+            base = self_base
+        else:
+            if not source_root:
+                return None
+            base = source_root
+
+        # The last segment is usually a type or function, so try the
+        # module path both with and without it.
+        for tail in (rest, rest[:-1]):
+
+            if not tail:
+                continue
+
+            joined = "/".join(tail)
+
+            for candidate in (
+                normalize_path(f"{base}/{joined}.rs"),
+                normalize_path(f"{base}/{joined}/mod.rs"),
+            ):
+                if candidate in repository_files:
+                    return candidate
+
+        return None
+
+    # A crate in this workspace: find its library root.
+    for suffix in (
+        f"/{first}/src/lib.rs",
+        f"/{first}/lib.rs",
+        f"/{first}/src/main.rs",
+    ):
+        matches = [
+            candidate for candidate in repository_files
+            if candidate.endswith(suffix)
+        ]
+        if matches:
+            return min(matches, key=lambda item: (item.count("/"), len(item)))
+
+    for candidate in (f"{first}/src/lib.rs", f"{first}/lib.rs"):
+        if candidate in repository_files:
+            return candidate
+
+    return None
+
+
 def resolve_import(imported: str, file_path: str, language: str,
                    repository_files: set):
 
@@ -932,6 +1042,9 @@ def resolve_import(imported: str, file_path: str, language: str,
     if language == "Java":
         return resolve_java_import(imported, file_path, repository_files)
 
+    if language == "Rust":
+        return resolve_rust_import(imported, file_path, repository_files)
+
     return None
 
 
@@ -950,6 +1063,11 @@ def external_label(imported: str, language: str) -> str:
 
     if language == "Java":
         return ".".join(name.split(".")[:3])
+
+    if language == "Rust":
+        # One node per crate, not one per imported symbol.
+        head = name.split("{")[0].split(" as ")[0].strip().strip(":")
+        return head.split("::")[0] or name
 
     return name
 
@@ -1010,12 +1128,17 @@ def index_file(repo_key: str, file_path: str, content: str,
     resolved: list[str] = []
     external: list[str] = []
 
+    # How many symbols came from each target, so a grouped node can say
+    # "6 imports" instead of hiding what it stands for.
+    counts: dict[str, int] = {}
+
     for imported in analysis["imports"]:
 
         target = resolve_import(imported, file_path, language, repository_files)
 
         if target and target != file_path:
             resolved.append(target)
+            counts[target] = counts.get(target, 0) + 1
             continue
 
         # A relative import that did not resolve is a file we could not
@@ -1028,6 +1151,7 @@ def index_file(repo_key: str, file_path: str, content: str,
 
         if label and label not in (".", ".."):
             external.append(label)
+            counts[label] = counts.get(label, 0) + 1
 
     entry = {
         "language": language,
@@ -1035,6 +1159,7 @@ def index_file(repo_key: str, file_path: str, content: str,
         "external": list(dict.fromkeys(external)),
         "functions": analysis["functions"],
         "classes": analysis["classes"],
+        "counts": counts,
         # Kept so a summary costs no extra GitHub request for any file
         # the user has already opened.
         "head": content[:HEAD_CHARACTERS],
@@ -1664,6 +1789,8 @@ async def file_dependencies(
 
     edges = []
 
+    counts = entry.get("counts", {})
+
     for target in entry["resolved"]:
         nodes.append({
             "id": target,
@@ -1672,6 +1799,7 @@ async def file_dependencies(
             "type": "file",
             "role": "import",
             "language": detect_language(target),
+            "count": counts.get(target, 1),
         })
         edges.append({"source": path, "target": target, "type": "dependency"})
 
@@ -1684,6 +1812,7 @@ async def file_dependencies(
             "type": "external",
             "role": "import",
             "language": "package",
+            "count": counts.get(package, 1),
         })
         edges.append({"source": path, "target": node_id, "type": "external"})
 
@@ -1735,6 +1864,366 @@ async def file_dependencies(
             "rateLimit": RATE_LIMIT,
         },
     }
+
+
+# ============================================================
+# TASK IMPACT AGENT
+#
+# The one place in this project where a loop earns its complexity:
+# you cannot know which files a change touches until you have looked
+# at some and followed where they lead.
+#
+# The model gets the same operations the UI has, and decides what to
+# open. Everything is bounded: iterations, file reads, and the size of
+# each result, because an agent with a read_file tool will happily
+# read forty files.
+# ============================================================
+
+# The limit that bites is input tokens per *minute*, counted across
+# every call in that minute rather than per request. Six steps plus the
+# final report lands near 4,500 input tokens, inside Qwen's 7,000.
+AGENT_MAX_STEPS = int(os.getenv("AGENT_MAX_STEPS", "6"))
+
+# How long to wait out a rate limit mid-run, and how many times. A run
+# that pauses ten seconds and finishes beats one that dies at step six.
+AGENT_MAX_WAITS = int(os.getenv("AGENT_MAX_WAITS", "2"))
+AGENT_MAX_WAIT_SECONDS = int(os.getenv("AGENT_MAX_WAIT_SECONDS", "25"))
+AGENT_MAX_READS = int(os.getenv("AGENT_MAX_READS", "10"))
+AGENT_MODEL = os.getenv("AGENT_MODEL", "openai/gpt-oss-120b")
+
+AGENT_SYSTEM_PROMPT = (
+    "You help a developer work out which files a change would touch in "
+    "a repository you can explore with tools.\n\n"
+    "Search once or twice at the start, then spend your remaining "
+    "steps reading files and tracing dependencies. Never repeat a "
+    "search you have already run: the results will be identical, and "
+    "you only have "
+    f"{AGENT_MAX_STEPS} steps in total.\n\n"
+    "If a search returns nothing useful, do not search again with a "
+    "similar word. Read the most plausible file you have seen so far, "
+    "or report what you know.\n\n"
+    "A file belongs in the report only if you have evidence from its "
+    "contents or its dependencies. Say what you are unsure about in "
+    "`unknowns` rather than padding the list. Four well-argued files "
+    "beat twenty guesses."
+)
+
+AGENT_TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "search_repository",
+            "description": (
+                "Find files whose path matches any of the given words. "
+                "Start here. Use several words; they are matched "
+                "independently."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "words": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Keywords, e.g. ['auth', 'login', 'session']",
+                    }
+                },
+                "required": ["words"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "read_file",
+            "description": (
+                "The opening of a file plus the functions and classes it "
+                "defines. Use on files that search suggested."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {"path": {"type": "string"}},
+                "required": ["path"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_dependencies",
+            "description": (
+                "What a file imports and what imports it. Use to find "
+                "what else a change would break."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {"path": {"type": "string"}},
+                "required": ["path"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "report_impact",
+            "description": "Deliver the answer. Call this exactly once, at the end.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "summary": {
+                        "type": "string",
+                        "description": "Two sentences on how the change fits this codebase.",
+                    },
+                    "files": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "path": {"type": "string"},
+                                "reason": {
+                                    "type": "string",
+                                    "description": "Why this file is affected, in one sentence.",
+                                },
+                                "confidence": {
+                                    "type": "string",
+                                    "enum": ["high", "medium", "low"],
+                                },
+                            },
+                            "required": ["path", "reason", "confidence"],
+                        },
+                    },
+                    "unknowns": {
+                        "type": "string",
+                        "description": "What you could not determine. Empty if nothing.",
+                    },
+                },
+                "required": ["summary", "files"],
+            },
+        },
+    },
+]
+
+
+REPORT_JSON_INSTRUCTION = (
+    "Stop exploring and give the answer now.\n\n"
+    "Reply with a JSON object and nothing else. No markdown, no fences, "
+    "no explanation around it. Shape:\n"
+    '{"summary": "two sentences", "files": [{"path": "...", '
+    '"reason": "one sentence", "confidence": "high|medium|low"}], '
+    '"unknowns": "what you could not determine"}\n\n'
+    "Use only paths you actually saw in tool results."
+)
+
+
+def parse_report_json(text: str) -> dict | None:
+    """Pull the report out of a plain-text reply.
+
+    Models wrap JSON in prose or code fences often enough that finding
+    the object is more reliable than insisting they don't."""
+
+    if not text:
+        return None
+
+    cleaned = text.strip()
+
+    if "```" in cleaned:
+        parts = cleaned.split("```")
+        for part in parts:
+            candidate = part.strip()
+            if candidate.startswith("json"):
+                candidate = candidate[4:].strip()
+            if candidate.startswith("{"):
+                cleaned = candidate
+                break
+
+    start = cleaned.find("{")
+    end = cleaned.rfind("}")
+
+    if start == -1 or end <= start:
+        return None
+
+    try:
+        data = json.loads(cleaned[start:end + 1])
+    except ValueError:
+        return None
+
+    return data if isinstance(data, dict) else None
+
+
+# An agent resends its whole conversation on every step, so a run that
+# reads five files sends those five results again and again. That is
+# what exhausts a per-minute token allowance near the end of a run,
+# exactly when the answer is due.
+AGENT_TOKEN_BUDGET = int(os.getenv("AGENT_TOKEN_BUDGET", "5000"))
+
+# Tool results kept in full. Older ones are reduced to their first line,
+# which is enough for the model to remember what it already looked at.
+AGENT_FULL_RESULTS = 3
+
+
+def estimate_tokens(messages: list) -> int:
+    return sum(len(str(message.get("content") or "")) for message in messages) // 4
+
+
+def trim_conversation(messages: list) -> list:
+    """Keep the task and the recent detail; compress the rest.
+
+    Dropping old messages entirely would let the model repeat work it
+    has already done, so old tool results are shortened rather than
+    removed."""
+
+    if len(messages) <= 4:
+        return messages
+
+    head = messages[:2]          # system prompt and the task
+    tail = messages[2:]
+
+    # Index of the oldest message that stays verbatim.
+    full_from = len(tail)
+    seen = 0
+
+    for index in range(len(tail) - 1, -1, -1):
+        if tail[index].get("role") == "tool":
+            seen += 1
+            if seen >= AGENT_FULL_RESULTS:
+                full_from = index
+                break
+        full_from = index
+
+    trimmed = []
+
+    for index, message in enumerate(tail):
+
+        if index >= full_from or message.get("role") != "tool":
+            trimmed.append(message)
+            continue
+
+        content = str(message.get("content") or "")
+        first_line = content.split("\n")[0][:120]
+
+        trimmed.append({
+            **message,
+            "content": f"{first_line} … (earlier result, shortened)",
+        })
+
+    return head + trimmed
+
+
+class ImpactRequest(BaseModel):
+    owner: str
+    repo: str
+    branch: str
+    task: str
+
+
+async def call_model_with_tools(messages: list, tools: list | None,
+                                max_tokens: int = 1200):
+    """Like call_model, but returns the whole assistant message so tool
+    calls survive."""
+
+    if not GROQ_API_KEY:
+        return None, "no_key"
+
+    if budget_remaining() <= 0:
+        return None, "daily_budget_spent"
+
+    CALL_BUDGET["used"] += 1
+
+    try:
+        response = await get_shared_client().post(
+            GROQ_URL,
+            headers={
+                "Authorization": f"Bearer {GROQ_API_KEY}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": AGENT_MODEL,
+                "messages": messages,
+                **(
+                    {
+                        "tools": tools,
+                        "tool_choice": "auto",
+                    }
+                    if tools
+                    else {}
+                ),
+                "max_completion_tokens": max_tokens,
+                "reasoning_effort": "low",
+                "temperature": 0.2,
+            },
+            timeout=60,
+        )
+    except Exception as error:
+        print("Agent request failed:", error)
+        return None, "network"
+
+    if response.status_code == 429:
+
+        print("Agent hit the model rate limit:", response.text[:200])
+
+        retry_after = response.headers.get("retry-after")
+
+        try:
+            wait = int(float(retry_after)) if retry_after else 0
+        except ValueError:
+            wait = 0
+
+        return None, f"model_rate_limit:{wait}"
+
+    if response.status_code == 400:
+        # gpt-oss on Groq sometimes emits reasoning where a tool call
+        # belongs, and the parser rejects the whole response. Known
+        # behaviour, not something the prompt can fully prevent.
+        body = response.text
+        if "tool_use_failed" in body or "output_parse_failed" in body:
+            print("Agent: model emitted prose instead of a tool call.")
+            return None, "parse_failed"
+
+    if response.status_code != 200:
+        print("Agent error:", response.status_code, response.text[:300])
+        return None, f"http_{response.status_code}"
+
+    try:
+        return response.json()["choices"][0]["message"], None
+    except (KeyError, IndexError, ValueError):
+        return None, "malformed_response"
+
+
+def agent_search(tree, words: list[str]) -> list[str]:
+
+    terms = [word.lower().strip() for word in words if word.strip()]
+
+    if not terms:
+        return []
+
+    scored = []
+
+    for item in tree:
+
+        if item.get("type") != "blob":
+            continue
+
+        path = item["path"]
+
+        if should_ignore(path) or not is_source_file(path):
+            continue
+
+        lower = path.lower()
+        name = lower.split("/")[-1]
+
+        hits = sum(1 for term in terms if term in lower)
+
+        if not hits:
+            continue
+
+        # A match in the file's own name means more than a match in some
+        # parent directory, which every file under it would share.
+        name_hits = sum(1 for term in terms if term in name)
+
+        scored.append((-name_hits, -hits, path.count("/"), path))
+
+    scored.sort()
+
+    return [row[-1] for row in scored[:20]]
 
 
 # ============================================================
@@ -1903,6 +2392,400 @@ async def repository_summary(owner: str, repo: str, branch: str):
     return {
         "summary": summary,
         "cached": False,
+        "budgetRemaining": budget_remaining(),
+    }
+
+
+@app.post(
+    "/api/impact",
+    dependencies=[Depends(rate_limit("agent")), Depends(guard_github_quota)],
+)
+async def task_impact(request: ImpactRequest):
+    """Which files a described change would touch."""
+
+    task = request.task.strip()
+
+    if not task:
+        raise HTTPException(status_code=400, detail="Describe the change first.")
+
+    if len(task) > 500:
+        raise HTTPException(status_code=400, detail="Keep the description short.")
+
+    if not GROQ_API_KEY:
+        raise HTTPException(
+            status_code=503,
+            detail="Task impact needs a model key. Set GROQ_API_KEY.",
+        )
+
+    owner, repo, branch = request.owner, request.repo, request.branch
+
+    tree = await get_tree(owner, repo, branch)
+
+    repository_files = {
+        item["path"] for item in tree if item.get("type") == "blob"
+    }
+
+    repo_key = cache_key(owner, repo, branch)
+
+    folders = [
+        node["label"]
+        for node in build_level_nodes(tree, prefix="")
+        if node["type"] == "directory"
+    ][:20]
+
+    messages = [
+        {"role": "system", "content": AGENT_SYSTEM_PROMPT},
+        {
+            "role": "user",
+            "content": (
+                f"Repository: {owner}/{repo}\n"
+                f"Top-level folders: {', '.join(folders)}\n"
+                f"Total files: {len(repository_files)}\n\n"
+                f"Change to make: {task}"
+            ),
+        },
+    ]
+
+    steps: list[dict] = []
+    reads = 0
+    report = None
+
+    searched: set[str] = set()
+    seen_paths: list[str] = []
+    stop_reason = "step_limit"
+    nudged = False
+    waits = 0
+
+    async def run_tool(name: str, arguments: dict) -> str:
+        """Returns a short string. Tool output goes back through the
+        model on every later step, so verbosity here costs tokens for
+        the rest of the run."""
+
+        nonlocal reads
+
+        if name == "search_repository":
+
+            words = [
+                str(word).lower().strip()
+                for word in arguments.get("words", [])
+                if str(word).strip()
+            ]
+
+            signature = ",".join(sorted(set(words)))
+
+            # Repeating a search is the loop this agent fell into: the
+            # same words return the same list, forever. Answer with a
+            # push forward instead of the identical results.
+            if signature and signature in searched:
+                unread = [
+                    path for path in seen_paths
+                    if path not in IMPORT_INDEX.get(repo_key, {})
+                ][:8]
+                return (
+                    "You already ran that search. Do not search again. "
+                    + (
+                        "Read one of these instead: " + ", ".join(unread)
+                        if unread
+                        else "Call report_impact with what you have."
+                    )
+                )
+
+            searched.add(signature)
+
+            matches = agent_search(tree, words)
+
+            if not matches:
+                return (
+                    "Nothing matched those words. Do not try similar "
+                    "words. Read a file you have already seen, or report "
+                    "what you know."
+                )
+
+            for path in matches:
+                if path not in seen_paths:
+                    seen_paths.append(path)
+
+            lines = []
+
+            for path in matches:
+                read_note = (
+                    " [already read]"
+                    if path in IMPORT_INDEX.get(repo_key, {})
+                    else ""
+                )
+                lines.append(f"{path} ({detect_language(path)}){read_note}")
+
+            return "\n".join(lines[:12])
+
+        if name in ("read_file", "get_dependencies"):
+
+            path = str(arguments.get("path", "")).strip()
+
+            if path not in repository_files:
+                return f"No such file: {path}"
+
+            if reads >= AGENT_MAX_READS:
+                return "Read limit reached. Report what you have."
+
+            reads += 1
+
+            await index_files(
+                repo_key, owner, repo, branch, [path], repository_files
+            )
+
+            entry = IMPORT_INDEX.get(repo_key, {}).get(path)
+
+            if entry is None:
+                return f"Could not read {path}."
+
+            if name == "read_file":
+                parts = [f"{path} ({entry['language']})"]
+                if entry["functions"]:
+                    parts.append("Functions: " + ", ".join(entry["functions"][:20]))
+                if entry["classes"]:
+                    parts.append("Classes: " + ", ".join(entry["classes"][:12]))
+                parts.append(entry.get("head", "")[:500])
+                return "\n".join(parts)
+
+            index = IMPORT_INDEX.get(repo_key, {})
+
+            importers = [
+                other for other, data in index.items()
+                if path in data["resolved"] and other != path
+            ]
+
+            return (
+                f"{path}\n"
+                f"Imports: {', '.join(entry['resolved'][:8]) or 'none in repo'}\n"
+                f"Packages: {', '.join(entry['external'][:6]) or 'none'}\n"
+                f"Imported by (files read so far): "
+                f"{', '.join(importers[:8]) or 'none found yet'}"
+            )
+
+        return f"Unknown tool: {name}"
+
+    for step in range(AGENT_MAX_STEPS):
+
+        message, error = await call_model_with_tools(
+            trim_conversation(messages), AGENT_TOOLS, max_tokens=700
+        )
+
+        if error and error.startswith("model_rate_limit"):
+
+            requested = error.split(":")[-1]
+            wait = min(
+                AGENT_MAX_WAIT_SECONDS,
+                max(5, int(requested) if requested.isdigit() else 8),
+            )
+
+            if waits < AGENT_MAX_WAITS:
+
+                waits += 1
+
+                steps.append({
+                    "tool": "note",
+                    "detail": f"paused {wait}s for the model's rate limit",
+                })
+
+                await asyncio.sleep(wait)
+                continue
+
+            stop_reason = "model_rate_limit"
+            break
+
+        if error == "parse_failed":
+            # The model wrote prose where a tool call belonged. Asking
+            # again rarely helps, so go straight to the plain-JSON
+            # request, which does not involve the tool parser at all.
+            steps.append({
+                "tool": "note",
+                "detail": "tool call was unparseable; asked for the answer directly",
+            })
+            break
+
+        if message is None:
+            stop_reason = error or "model_unavailable"
+            break
+
+        tool_calls = message.get("tool_calls") or []
+
+        if not tool_calls:
+
+            # It answered in prose instead of using a tool. Ask once,
+            # then give up rather than looping on the same behaviour.
+            if nudged:
+                stop_reason = "stopped_using_tools"
+                break
+
+            nudged = True
+
+            messages.append({
+                "role": "assistant",
+                "content": message.get("content") or "",
+            })
+            messages.append({
+                "role": "user",
+                "content": (
+                    "Use a tool. Either read a file you have seen, or "
+                    "call report_impact with what you know."
+                ),
+            })
+
+            steps.append({
+                "tool": "note",
+                "detail": "answered without using a tool; asked again",
+            })
+
+            continue
+
+        messages.append({
+            "role": "assistant",
+            "content": message.get("content") or "",
+            "tool_calls": tool_calls,
+        })
+
+        finished = False
+
+        for call in tool_calls:
+
+            name = call.get("function", {}).get("name", "")
+            raw = call.get("function", {}).get("arguments") or "{}"
+
+            try:
+                arguments = json.loads(raw)
+            except ValueError:
+                arguments = {}
+
+            if name == "report_impact":
+                report = arguments
+                steps.append({"tool": name, "detail": "delivered the report"})
+                finished = True
+                break
+
+            result = await run_tool(name, arguments)
+
+            steps.append({
+                "tool": name,
+                "detail": (
+                    ", ".join(arguments.get("words", []))
+                    if name == "search_repository"
+                    else str(arguments.get("path", ""))
+                ),
+                "found": len(result.splitlines()),
+            })
+
+            messages.append({
+                "role": "tool",
+                "tool_call_id": call.get("id", ""),
+                "content": result[:900],
+            })
+
+        if finished:
+            break
+
+    if report is None and stop_reason in ("step_limit", "parse_failed"):
+
+        # No tools on this call, so Groq's tool parser is out of the
+        # picture. Whatever the model has established still produces an
+        # answer instead of an empty result.
+        messages.append({"role": "user", "content": REPORT_JSON_INSTRUCTION})
+
+        final, final_error = await call_model_with_tools(
+            trim_conversation(messages), None, max_tokens=900
+        )
+
+        # The report is the one call worth waiting for.
+        if final is None and str(final_error).startswith("model_rate_limit"):
+            await asyncio.sleep(min(AGENT_MAX_WAIT_SECONDS, 10))
+            final, final_error = await call_model_with_tools(
+                trim_conversation(messages), None, max_tokens=900
+            )
+
+        if final is not None:
+            report = parse_report_json(final.get("content") or "")
+
+            if report:
+                steps.append({
+                    "tool": "report_impact",
+                    "detail": "answered directly after exploring",
+                })
+            else:
+                stop_reason = "unparseable_report"
+        elif final_error:
+            stop_reason = final_error.split(":")[0]
+
+    if report is None:
+
+        explanations = {
+            "step_limit": (
+                "It used all its steps without reaching a conclusion. "
+                "A narrower description usually helps."
+            ),
+            "model_rate_limit": (
+                "The model's per-minute input token limit was reached, "
+                "and waiting did not clear it. Try again in a minute, or "
+                "set AGENT_MODEL to groq/compound, which allows far more "
+                "tokens per minute."
+            ),
+            "daily_budget_spent": (
+                "The daily model budget is spent. It resets tomorrow."
+            ),
+            "network": "The model could not be reached.",
+            "stopped_using_tools": (
+                "The model stopped exploring before it had an answer. "
+                "Try describing the change more concretely."
+            ),
+            "malformed_response": "The model returned something unusable.",
+            "parse_failed": (
+                "The model wrote prose where a tool call belonged, which "
+                "this model does intermittently. Try again, or set "
+                "AGENT_MODEL to qwen/qwen3.8-27b."
+            ),
+            "unparseable_report": (
+                "It explored the repository but its final answer could "
+                "not be read. Try again, or set AGENT_MODEL to "
+                "qwen/qwen3.8-27b."
+            ),
+        }
+
+        return {
+            "task": task,
+            "summary": None,
+            "files": [],
+            "steps": steps,
+            "filesRead": reads,
+            "budgetRemaining": budget_remaining(),
+            "incomplete": True,
+            "stopReason": stop_reason,
+            "reason": explanations.get(
+                stop_reason,
+                f"The run stopped early ({stop_reason}).",
+            ),
+        }
+
+    # Only report files that exist. A model naming a plausible path that
+    # is not in the repository is the failure mode worth catching.
+    verified = []
+
+    for item in report.get("files", []):
+
+        path = str(item.get("path", "")).strip()
+
+        if path in repository_files:
+            verified.append({
+                "path": path,
+                "reason": item.get("reason", ""),
+                "confidence": item.get("confidence", "medium"),
+            })
+
+    return {
+        "task": task,
+        "summary": report.get("summary", ""),
+        "files": verified,
+        "unknowns": report.get("unknowns", ""),
+        "dropped": len(report.get("files", [])) - len(verified),
+        "steps": steps,
+        "filesRead": reads,
         "budgetRemaining": budget_remaining(),
     }
 

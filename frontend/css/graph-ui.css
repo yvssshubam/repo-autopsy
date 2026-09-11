@@ -1963,3 +1963,217 @@
   color: #96a09b;
 
 }
+
+
+/* ============================================================
+   PICKER SCOPE
+============================================================ */
+
+.picker-heading {
+
+  display: flex;
+
+  justify-content: space-between;
+
+  align-items: baseline;
+
+  gap: 8px;
+
+}
+
+
+.picker-clear {
+
+  flex: 0 0 auto;
+
+  border: 0;
+
+  background: none;
+
+  padding: 0;
+
+  color: var(--accent);
+
+  font: 9px var(--mono);
+
+  text-decoration: underline;
+
+}
+
+
+/* ============================================================
+   TASK IMPACT
+============================================================ */
+
+.impact-status {
+
+  border: 1px solid var(--line);
+
+  background: #f8f9f5;
+
+  padding: 22px;
+
+  max-width: 560px;
+
+}
+
+
+.impact-summary {
+
+  margin: 0 0 20px;
+
+  max-width: 70ch;
+
+  color: #49575b;
+
+  font-size: 13px;
+
+  line-height: 1.8;
+
+}
+
+
+.impact-note {
+
+  margin: 14px 0 0;
+
+  max-width: 70ch;
+
+  color: #7b8587;
+
+  font: 10px/1.8 var(--mono);
+
+}
+
+
+.impact-files {
+
+  display: flex;
+
+  flex-direction: column;
+
+  gap: 1px;
+
+  margin-top: 10px;
+
+  border: 1px solid var(--line);
+
+  background: var(--line);
+
+}
+
+
+.impact-file {
+
+  display: flex;
+
+  flex-direction: column;
+
+  gap: 5px;
+
+  width: 100%;
+
+  border: 0;
+
+  border-left: 3px solid transparent;
+
+  background: #f8f9f5;
+
+  padding: 12px 15px;
+
+  text-align: left;
+
+}
+
+
+.impact-file:hover {
+
+  background: #eef2ec;
+
+}
+
+
+.impact-file-top {
+
+  display: flex;
+
+  align-items: baseline;
+
+  justify-content: space-between;
+
+  gap: 12px;
+
+}
+
+
+.impact-path {
+
+  color: var(--ink);
+
+  font: 11px var(--mono);
+
+  overflow-wrap: anywhere;
+
+}
+
+
+.impact-confidence {
+
+  flex: 0 0 auto;
+
+  color: #8b9591;
+
+  font: 9px var(--mono);
+
+  letter-spacing: .5px;
+
+  text-transform: uppercase;
+
+}
+
+
+.impact-reason {
+
+  color: #657276;
+
+  font-size: 11px;
+
+  line-height: 1.6;
+
+}
+
+
+.confidence-high { border-left-color: var(--teal); }
+.confidence-medium { border-left-color: #c8b273; }
+.confidence-low { border-left-color: #c9cec8; }
+
+
+.impact-steps {
+
+  margin-top: 18px;
+
+  color: #7b8587;
+
+  font: 10px var(--mono);
+
+}
+
+
+.impact-steps summary {
+
+  cursor: pointer;
+
+  padding: 6px 0;
+
+}
+
+
+.impact-step {
+
+  padding: 3px 0 3px 16px;
+
+  color: #8b9591;
+
+  overflow-wrap: anywhere;
+
+}
