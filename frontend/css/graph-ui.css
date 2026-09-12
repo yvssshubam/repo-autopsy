@@ -2177,3 +2177,356 @@
   overflow-wrap: anywhere;
 
 }
+
+
+/* ============================================================
+   SYMBOLS
+
+   What an import actually brings in, rather than just that it
+   happened.
+============================================================ */
+
+.dep-symbols {
+
+  display: block;
+
+  padding: 2px 0 0 1px;
+
+  color: #93a099;
+
+  font: 9px var(--mono);
+
+  overflow-wrap: anywhere;
+
+}
+
+
+.exports-panel {
+
+  padding: 15px 18px;
+
+  border-top: 1px solid #d5dad4;
+
+}
+
+
+.symbol-list {
+
+  display: flex;
+
+  flex-wrap: wrap;
+
+  gap: 5px;
+
+  margin-top: 4px;
+
+}
+
+
+.symbol {
+
+  border: 1px solid #d5dad4;
+
+  background: transparent;
+
+  padding: 3px 7px;
+
+  color: #8b9591;
+
+  font: 9px var(--mono);
+
+}
+
+
+/* A name something else actually imports. */
+.symbol.used {
+
+  border-color: var(--teal);
+
+  color: #1d5f5d;
+
+}
+
+
+/* ============================================================
+   TESTS
+============================================================ */
+
+.tests-panel {
+
+  padding: 15px 18px;
+
+  border-top: 1px solid #d5dad4;
+
+}
+
+
+.test-list {
+
+  display: flex;
+
+  flex-direction: column;
+
+  gap: 1px;
+
+  margin: 8px 0 4px;
+
+  border: 1px solid #e0e4de;
+
+  background: #e0e4de;
+
+}
+
+
+.test-row {
+
+  display: flex;
+
+  flex-direction: column;
+
+  gap: 3px;
+
+  width: 100%;
+
+  border: 0;
+
+  background: #f8f9f5;
+
+  padding: 9px 12px;
+
+  text-align: left;
+
+}
+
+
+.test-row:hover {
+
+  background: #eef2ec;
+
+}
+
+
+.test-row-top {
+
+  display: flex;
+
+  align-items: baseline;
+
+  justify-content: space-between;
+
+  gap: 10px;
+
+}
+
+
+.test-path {
+
+  color: var(--ink);
+
+  font: 10px var(--mono);
+
+  overflow-wrap: anywhere;
+
+}
+
+
+.test-evidence {
+
+  flex: 0 0 auto;
+
+  color: #a1aaa5;
+
+  font: 9px var(--mono);
+
+}
+
+
+/* An import is evidence. A matching name is a guess. */
+.test-evidence.proven {
+
+  color: #1d5f5d;
+
+}
+
+
+/* ============================================================
+   DIFF IMPACT
+============================================================ */
+
+.diff-section {
+
+  margin-top: 34px;
+
+  padding-top: 24px;
+
+  border-top: 1px solid var(--line);
+
+}
+
+
+.diff-section .detail-label {
+
+  margin-bottom: 12px;
+
+}
+
+
+#diffForm input {
+
+  max-width: 240px;
+
+}
+
+
+.impact-confidence.proven {
+
+  color: #1d5f5d;
+
+}
+
+
+/* What kind of change it was. */
+.status-added    { color: #1d7c79; }
+.status-removed  { color: var(--accent); }
+.status-renamed  { color: #8b7a4a; }
+
+
+/* ============================================================
+   SYMBOL OVERFLOW
+============================================================ */
+
+.symbol.muted-chip {
+
+  border-style: dashed;
+
+  color: #a1aaa5;
+
+}
+
+
+.symbol-list {
+
+  max-height: 132px;
+
+  overflow-y: auto;
+
+}
+/* ============================================================
+   IMPACT SUGGESTIONS
+
+   Paste into graph-ui.css. Neutral values throughout — swap in your
+   own tokens where you have them.
+============================================================ */
+
+.suggestions {
+  margin-bottom: 1rem;
+}
+
+.suggestions-title {
+  margin: 0 0 0.5rem;
+  font-size: 0.8rem;
+  letter-spacing: 0.02em;
+  opacity: 0.6;
+}
+
+.suggestion-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.suggestion {
+  display: inline-flex;
+  align-items: stretch;
+  padding: 0;
+  border: 1px solid rgba(127, 127, 127, 0.35);
+  border-radius: 999px;
+  background: transparent;
+  color: inherit;
+  overflow: hidden;
+  transition: border-color 0.15s ease;
+}
+
+.suggestion:hover,
+.suggestion:focus-within {
+  border-color: rgba(127, 127, 127, 0.7);
+}
+
+.suggestion-main {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.4rem 0.7rem;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 0.85rem;
+  line-height: 1.2;
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.15s ease;
+}
+
+.suggestion-main:hover,
+.suggestion-main:focus-visible {
+  background: rgba(127, 127, 127, 0.08);
+}
+
+/* Separate target, so checking the issue and using the text are two
+   different clicks rather than one ambiguous one. */
+.suggestion-link {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 0.6rem;
+  border-left: 1px solid rgba(127, 127, 127, 0.35);
+  font-size: 0.75rem;
+  text-decoration: none;
+  color: inherit;
+  opacity: 0.7;
+}
+
+.suggestion-link:hover,
+.suggestion-link:focus-visible {
+  background: rgba(127, 127, 127, 0.12);
+  opacity: 1;
+}
+
+/* Issue titles are sentences. One clipped line read as noise in
+   testing, so they wrap to two and the full text sits on hover. */
+.suggestion-task {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  max-width: 44ch;
+  text-wrap: pretty;
+}
+
+/* The tag carries the honesty: a fact read off the tree should not
+   look the same as a model's guess. */
+.suggestion-tag {
+  flex: none;
+  padding: 0.1rem 0.4rem;
+  border-radius: 999px;
+  font-size: 0.68rem;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  background: rgba(127, 127, 127, 0.18);
+  opacity: 0.75;
+}
+
+.suggestion-large .suggestion-tag,
+.suggestion-requested .suggestion-tag {
+  background: rgba(64, 160, 96, 0.22);
+}
+
+.suggestion-model .suggestion-tag {
+  background: transparent;
+  border: 1px dashed rgba(127, 127, 127, 0.5);
+}
+
+@media (max-width: 640px) {
+  .suggestion-task { max-width: 30ch; -webkit-line-clamp: 3; }
+  .suggestion { max-width: 100%; }
+}

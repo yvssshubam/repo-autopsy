@@ -407,7 +407,8 @@ on("#repoForm", "submit", async event => {
 
     await Promise.all([
       loadArchitecture("", { record: false }),
-      loadRepositoryTree()
+      loadRepositoryTree(),
+      loadMetrics()
     ]);
 
     /* Deliberately not awaited: the graph is already usable. */
@@ -458,7 +459,8 @@ function normalizeGraphData(data, defaultEdgeType) {
       0
     ),
     fileCount: Number(node.descendantFileCount ?? 0),
-    directoryCount: Number(node.descendantDirectoryCount ?? 0)
+    directoryCount: Number(node.descendantDirectoryCount ?? 0),
+    symbols: Array.isArray(node.symbols) ? node.symbols : []
   }));
 
   const knownIds = new Set(nodes.map(node => node.id));
@@ -467,7 +469,8 @@ function normalizeGraphData(data, defaultEdgeType) {
     .map(edge => ({
       source: String(edge.source ?? ""),
       target: String(edge.target ?? ""),
-      type: edge.type || defaultEdgeType
+      type: edge.type || defaultEdgeType,
+      symbols: Array.isArray(edge.symbols) ? edge.symbols : []
     }))
     .filter(edge => knownIds.has(edge.source) && knownIds.has(edge.target));
 
@@ -485,6 +488,7 @@ function normalizeDependencyData(data) {
 
   normalized.path = String(data.path || "");
   normalized.structure = data.structure || { functions: [], classes: [] };
+  normalized.exports = data.exports || { used: [], defined: [] };
 
   return normalized;
 }
@@ -600,9 +604,10 @@ async function loadFileDependencies(path, options = {}) {
     syncTreeToPath(path);
     renderFileInspector(path, data);
 
-    /* Neither of these blocks the graph. */
+    /* None of these block the graph. */
     loadFileSource(path);
     loadFileSummary(path);
+    loadTests(path, false);
 
   } catch (error) {
 
@@ -1459,15 +1464,28 @@ function renderGraph() {
   if (state.selectedId) applySelectionHighlight();
 }
 
+function symbolCaption(node) {
+
+  const names = node.symbols || [];
+
+  if (!names.length) return "";
+
+  if (names.length <= 2) return names.join(", ");
+
+  return `${names.slice(0, 2).join(", ")} +${names.length - 2}`;
+}
+
 function nodeSubtitle(node) {
 
   if (node.type === "more") return "click to reveal";
   if (node.type === "filegroup") return "click to show them";
 
-  /* A grouped node must say how much it stands for, otherwise the
-     tidier graph is just a less informative one. */
+  /* What is taken from a dependency says far more than how many
+     things are. "calls validate_dispute" beats "2 imports". */
+  const named = symbolCaption(node);
+
   if (node.type === "external") {
-    return node.count > 1 ? plural(node.count, "import") : "";
+    return named || (node.count > 1 ? plural(node.count, "import") : "");
   }
 
   if (node.isParent) return "back to parent";
@@ -1480,10 +1498,11 @@ function nodeSubtitle(node) {
   }
 
   if (node.role === "selected") return "selected";
-  if (node.role === "importer") return "imports this";
 
-  if (node.role === "import" && node.count > 1) {
-    return plural(node.count, "import");
+  if (node.role === "importer") return named || "imports this";
+
+  if (node.role === "import") {
+    return named || (node.count > 1 ? plural(node.count, "import") : "");
   }
 
   return node.language || "";
@@ -2114,6 +2133,261 @@ function renderNodeInspector(node) {
   renderList("#usedBy", incoming, "Nothing here points at this");
 }
 
+/* ============================================================
+   TESTS
+
+   Name matches are free and arrive with the file. Import evidence
+   costs a request per test file, so it is behind a button.
+============================================================ */
+
+function ensureTestsPanel() {
+
+  if ($("#testsPanel")) return;
+
+  const anchor = $("#exportsPanel") || $("#usedBy");
+  if (!anchor) return;
+
+  const panel = document.createElement("div");
+  panel.id = "testsPanel";
+  panel.className = "tests-panel";
+  panel.hidden = true;
+
+  const host = anchor.id === "exportsPanel" ? anchor : anchor.closest("div");
+
+  host.parentNode.insertBefore(panel, host.nextSibling);
+}
+
+function renderTests(path, data, scanned) {
+
+  ensureTestsPanel();
+
+  const panel = $("#testsPanel");
+  if (!panel) return;
+
+  const tests = data.tests || [];
+  const meta = data.meta || {};
+
+  panel.hidden = false;
+  panel.innerHTML = "";
+
+  const label = document.createElement("span");
+  label.className = "detail-label";
+  label.textContent = "TESTS";
+  panel.appendChild(label);
+
+  if (!tests.length) {
+
+    const empty = document.createElement("p");
+    empty.className = "impact-note";
+    empty.textContent = scanned
+      ? `No test among the ${meta.testFilesInRepo || 0} in this repository ` +
+        "imports this file."
+      : "No test is named after this file.";
+    panel.appendChild(empty);
+
+  } else {
+
+    const list = document.createElement("div");
+    list.className = "test-list";
+
+    tests.forEach(test => {
+
+      const row = document.createElement("button");
+      row.type = "button";
+      row.className = "test-row";
+      row.title = `Open ${test.path}`;
+
+      const name = document.createElement("span");
+      name.className = "test-path";
+      name.textContent = test.path;
+
+      const badge = document.createElement("span");
+      badge.className = test.evidence.includes("imports")
+        ? "test-evidence proven"
+        : "test-evidence";
+
+      /* An import is proof. A matching name is a guess that is usually
+         right. Saying which is which matters more than the count. */
+      badge.textContent = test.evidence.includes("imports")
+        ? "imports it"
+        : "named for it";
+
+      badge.title = test.evidence.includes("imports")
+        ? `Imports ${test.symbols.join(", ") || "this file"}`
+        : "Matched by naming convention, not verified";
+
+      const top = document.createElement("span");
+      top.className = "test-row-top";
+      top.appendChild(name);
+      top.appendChild(badge);
+
+      row.appendChild(top);
+
+      if (test.symbols && test.symbols.length) {
+        const detail = document.createElement("span");
+        detail.className = "dep-symbols";
+        detail.textContent = `covers ${test.symbols.join(", ")}`;
+        row.appendChild(detail);
+      }
+
+      row.addEventListener("click", event => {
+        event.preventDefault();
+        loadFileDependencies(test.path);
+      });
+
+      list.appendChild(row);
+    });
+
+    panel.appendChild(list);
+  }
+
+  if (!scanned) {
+
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "scope-toggle";
+    button.textContent = "Check every test file for imports";
+
+    button.addEventListener("click", event => {
+      event.preventDefault();
+      button.disabled = true;
+      button.textContent = "Reading test files…";
+      loadTests(path, true);
+    });
+
+    panel.appendChild(button);
+
+  } else {
+
+    const note = document.createElement("p");
+    note.className = "impact-note";
+    note.textContent =
+      `Read ${plural(meta.scanned || 0, "test file")} in this repository.`;
+    panel.appendChild(note);
+  }
+}
+
+async function loadTests(path, scan) {
+
+  try {
+
+    const response = await fetch(
+      `${API_BASE}/api/repository/file/tests?${repoQuery({
+        path,
+        scan: scan ? "true" : "false"
+      })}`
+    );
+
+    if (!response.ok) return;
+
+    const data = await response.json();
+
+    /* The user may have opened another file while this was running. */
+    if (state.path !== path) return;
+
+    renderTests(path, data, scan);
+
+  } catch {
+    /* Tests are supplementary; failing quietly is correct here. */
+  }
+}
+
+function ensureExportsPanel() {
+
+  if ($("#exportsPanel")) return;
+
+  const anchor = $("#usedBy");
+  if (!anchor) return;
+
+  const host = anchor.closest("div") || anchor.parentNode;
+
+  const panel = document.createElement("div");
+  panel.id = "exportsPanel";
+  panel.className = "exports-panel";
+  panel.hidden = true;
+
+  host.parentNode.insertBefore(panel, host.nextSibling);
+}
+
+const SYMBOL_CHIP_LIMIT = 40;
+
+function renderExports(exports, importerCount) {
+
+  ensureExportsPanel();
+
+  const panel = $("#exportsPanel");
+  if (!panel) return;
+
+  const defined = exports.defined || [];
+  const used = exports.used || [];
+
+  if (!defined.length) {
+    panel.hidden = true;
+    return;
+  }
+
+  panel.hidden = false;
+  panel.innerHTML = "";
+
+  const label = document.createElement("span");
+  label.className = "detail-label";
+  label.textContent = `DEFINED HERE (${defined.length})`;
+  panel.appendChild(label);
+
+  /* Used names first: they are the ones worth reading. */
+  const ordered = [
+    ...defined.filter(name => used.includes(name)),
+    ...defined.filter(name => !used.includes(name))
+  ];
+
+  const shown = ordered.slice(0, SYMBOL_CHIP_LIMIT);
+
+  const list = document.createElement("div");
+  list.className = "symbol-list";
+
+  shown.forEach(name => {
+    const chip = document.createElement("span");
+    chip.className = used.includes(name) ? "symbol used" : "symbol";
+    chip.textContent = name;
+    chip.title = used.includes(name)
+      ? "Imported by a file that has been read"
+      : "Not imported by any file read so far";
+    list.appendChild(chip);
+  });
+
+  if (ordered.length > shown.length) {
+    const more = document.createElement("span");
+    more.className = "symbol muted-chip";
+    more.textContent = `+${ordered.length - shown.length} more`;
+    list.appendChild(more);
+  }
+
+  panel.appendChild(list);
+
+  const note = document.createElement("p");
+  note.className = "impact-note";
+
+  /* With no importers read, nothing can be marked used, and saying
+     "179 names are unused" would be a claim the data cannot support. */
+  if (!importerCount) {
+    note.textContent =
+      "Nothing that imports this file has been read yet, so none of " +
+      "these can be marked as used. Widen the search for callers first.";
+  } else if (used.length === 0) {
+    note.textContent =
+      `${plural(importerCount, "file")} import this one, but none of them ` +
+      "use these names directly.";
+  } else {
+    const unused = defined.length - used.length;
+    note.textContent = unused
+      ? `${used.length} of ${defined.length} used by the files read so far. ` +
+        "The rest may still be used elsewhere."
+      : "Every name defined here is used by a file that imports it.";
+  }
+
+  panel.appendChild(note);
+}
+
 function ensureImportsLabel() {
 
   if ($("#importsLabel")) return;
@@ -2131,6 +2405,12 @@ function ensureImportsLabel() {
 function renderFileInspector(path, data) {
 
   ensureImportsLabel();
+
+  const importerCount = data.edges.filter(
+    edge => edge.target === path
+  ).length;
+
+  renderExports(data.exports || { used: [], defined: [] }, importerCount);
 
   const imports = data.edges
     .filter(edge => edge.source === path)
@@ -2178,6 +2458,17 @@ function renderFileInspector(path, data) {
   ensureScopeControl();
 }
 
+function symbolsFor(id) {
+
+  const edge = state.graph.edges.find(
+    item =>
+      (item.source === state.path && item.target === id) ||
+      (item.target === state.path && item.source === id)
+  );
+
+  return edge && edge.symbols ? edge.symbols : [];
+}
+
 function renderList(selector, items, emptyMessage) {
 
   const container = $(selector);
@@ -2196,8 +2487,19 @@ function renderList(selector, items, emptyMessage) {
     const isExternal = item.startsWith("external:");
 
     if (isExternal) {
+
       li.className = "dep-external";
       li.textContent = item.replace(/^external:/, "");
+
+      const names = symbolsFor(item);
+
+      if (names.length) {
+        const detail = document.createElement("span");
+        detail.className = "dep-symbols";
+        detail.textContent = names.join(", ");
+        li.appendChild(detail);
+      }
+
       container.appendChild(li);
       return;
     }
@@ -2215,6 +2517,16 @@ function renderList(selector, items, emptyMessage) {
     });
 
     li.appendChild(button);
+
+    const names = symbolsFor(item);
+
+    if (names.length) {
+      const detail = document.createElement("span");
+      detail.className = "dep-symbols";
+      detail.textContent = names.join(", ");
+      li.appendChild(detail);
+    }
+
     container.appendChild(li);
   });
 }
@@ -2732,6 +3044,22 @@ function activateTab(name) {
     view.classList.toggle("active", view.id === name);
   });
 
+  if (name === "impact") {
+
+    /* Lazy: a repository nobody asks about costs nothing. */
+    loadSuggestions();
+    return;
+  }
+
+  if (name === "overview") {
+
+    /* Refetched rather than cached: the symbol count grows as
+       the user opens files. The manifest read behind it is
+       cached server-side, so repeat visits are nearly free. */
+    loadMetrics();
+    return;
+  }
+
   if (name === "architecture") {
 
     /* Architecture always shows the structural graph, never a file
@@ -2775,6 +3103,10 @@ function showDependencyHint() {
   setText("#depEdgeCount", "0");
 
   setSummary("#fileSummary", null, false);
+
+  const testsPanel = $("#testsPanel");
+  if (testsPanel) testsPanel.hidden = true;
+
   renderDependencyPicker();
 }
 
@@ -3083,6 +3415,268 @@ function renderImpact(data) {
   }
 }
 
+/* ============================================================
+   DIFF IMPACT
+
+   Same question as task impact, but grounded in a real commit range
+   instead of a description, so nothing has to be guessed.
+============================================================ */
+
+function ensureDiffForm() {
+
+  if ($("#diffForm")) return;
+
+  const host = $("#impact");
+  if (!host) return;
+
+  const section = document.createElement("section");
+  section.className = "diff-section";
+
+  section.innerHTML = `
+    <span class="detail-label">OR COMPARE TWO POINTS IN HISTORY</span>
+    <form class="impact-form" id="diffForm">
+      <div>
+        <input id="diffBase" placeholder="base (tag, branch or SHA)"
+               autocomplete="off">
+        <input id="diffHead" placeholder="head" autocomplete="off">
+        <button type="submit">Compare</button>
+      </div>
+    </form>
+    <div class="results" id="diffResults"></div>
+  `;
+
+  host.appendChild(section);
+}
+
+function renderDiff(data) {
+
+  const container = $("#diffResults");
+  if (!container) return;
+
+  container.innerHTML = "";
+
+  const meta = data.meta || {};
+
+  const headline = document.createElement("p");
+  headline.className = "impact-summary";
+
+  /* An empty comparison is almost always the two refs being the same
+     or the wrong way round, so say which rather than reporting zeros. */
+  if (!data.commits && !(data.changed || []).length) {
+
+    const explanations = {
+      identical:
+        `${data.base} and ${data.head} point at the same commit, so there ` +
+        "is nothing between them.",
+      behind:
+        `${data.head} is behind ${data.base}. Swap them: the base is where ` +
+        "you are coming from.",
+      diverged:
+        `${data.base} and ${data.head} have diverged, and GitHub reports no ` +
+        "direct path between them."
+    };
+
+    headline.textContent =
+      explanations[data.status] ||
+      `No commits between ${data.base} and ${data.head}.`;
+
+    container.appendChild(headline);
+
+    const hint = document.createElement("p");
+    hint.className = "impact-note";
+    hint.textContent =
+      "Base is the older point, head is the newer one. Both accept a tag, " +
+      "a branch name or a commit SHA, for example main and a feature branch.";
+    container.appendChild(hint);
+
+    return;
+  }
+
+  headline.textContent =
+    `${plural(data.commits || 0, "commit")} changed ` +
+    `${plural(meta.changedFiles || 0, "file")}, of which ` +
+    `${meta.analyzableChanged || 0} can be traced through imports.`;
+  container.appendChild(headline);
+
+  const section = (title, rows, renderRow) => {
+
+    if (!rows.length) return;
+
+    const label = document.createElement("span");
+    label.className = "detail-label";
+    label.textContent = title;
+    container.appendChild(label);
+
+    const list = document.createElement("div");
+    list.className = "impact-files";
+
+    rows.forEach(row => list.appendChild(renderRow(row)));
+
+    container.appendChild(list);
+  };
+
+  const fileRow = (path, note, badge, badgeClass) => {
+
+    const row = document.createElement("button");
+    row.type = "button";
+    row.className = "impact-file";
+    row.title = `Open ${path}`;
+
+    const top = document.createElement("span");
+    top.className = "impact-file-top";
+
+    const name = document.createElement("span");
+    name.className = "impact-path";
+    name.textContent = path;
+    top.appendChild(name);
+
+    if (badge) {
+      const mark = document.createElement("span");
+      mark.className = badgeClass || "impact-confidence";
+      mark.textContent = badge;
+      top.appendChild(mark);
+    }
+
+    row.appendChild(top);
+
+    if (note) {
+      const detail = document.createElement("span");
+      detail.className = "impact-reason";
+      detail.textContent = note;
+      row.appendChild(detail);
+    }
+
+    row.addEventListener("click", event => {
+      event.preventDefault();
+      loadFileDependencies(path);
+    });
+
+    return row;
+  };
+
+  section("CHANGED", data.changed || [], item =>
+    fileRow(
+      item.path,
+      `+${item.additions} / -${item.deletions}`,
+      item.status,
+      `impact-confidence status-${item.status}`
+    )
+  );
+
+  section("REACHED BY THOSE CHANGES", data.affected || [], item =>
+    fileRow(
+      item.path,
+      `imports ${item.via}`,
+      item.distance === 1 ? "direct" : `${item.distance} hops`,
+      item.distance === 1
+        ? "impact-confidence proven"
+        : "impact-confidence"
+    )
+  );
+
+  section("TESTS WORTH RUNNING", data.tests || [], item =>
+    fileRow(item.path, `covers ${item.covers.join(", ")}`, "", "")
+  );
+
+  const note = document.createElement("p");
+  note.className = "impact-note";
+
+  if (!meta.scanComplete) {
+    note.textContent =
+      "Only files already read count towards what a change reaches. " +
+      "Scan the repository for the full picture.";
+
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "scope-toggle";
+    button.textContent = "Scan the repository";
+
+    button.addEventListener("click", event => {
+      event.preventDefault();
+      button.disabled = true;
+      button.textContent = "Reading source files…";
+      runDiff(true);
+    });
+
+    container.appendChild(note);
+    container.appendChild(button);
+    return;
+  }
+
+  note.textContent =
+    `Read ${plural(meta.scanned || 0, "file")}, following imports up to ` +
+    `${plural(meta.depth || 1, "hop")}.` +
+    (meta.truncated
+      ? " GitHub caps a comparison at 300 files, so this diff is partial."
+      : "");
+
+  container.appendChild(note);
+}
+
+async function runDiff(scan) {
+
+  const base = ($("#diffBase") || {}).value;
+  const head = ($("#diffHead") || {}).value;
+
+  if (!base || !head) return;
+
+  if (!state.repo.owner) {
+    setHtml("#diffResults",
+      `<p class="impact-note">Analyze a repository first.</p>`);
+    return;
+  }
+
+  setHtml("#diffResults", `
+    <div class="impact-status">
+      <div class="loading-title">Comparing ${escapeHtml(base)} to ${escapeHtml(head)}</div>
+      <div class="loading-bar"></div>
+    </div>
+  `);
+
+  try {
+
+    const query = new URLSearchParams({
+      owner: state.repo.owner,
+      repo: state.repo.repo,
+      branch: state.repo.branch,
+      base: base.trim(),
+      head: head.trim(),
+      scan: scan ? "true" : "false"
+    });
+
+    const response = await fetch(`${API_BASE}/api/repository/diff?${query}`);
+    const data = await response.json();
+
+    if (!response.ok) {
+      setHtml("#diffResults", `<p class="impact-note">${
+        escapeHtml(data.detail || `Failed (HTTP ${response.status}).`)
+      }</p>`);
+      return;
+    }
+
+    renderDiff(data);
+
+  } catch (error) {
+    setHtml("#diffResults",
+      `<p class="impact-note">${escapeHtml(error.message)}</p>`);
+  }
+}
+
+function initDiff() {
+
+  ensureDiffForm();
+
+  const form = $("#diffForm");
+  if (!form) return;
+
+  form.addEventListener("submit", event => {
+    event.preventDefault();
+    event.stopPropagation();
+    runDiff(false);
+  });
+}
+
+
 function initImpact() {
 
   const form = $("#impactForm");
@@ -3157,6 +3751,285 @@ function initImpact() {
 
 
 /* ============================================================
+   IMPACT SUGGESTIONS
+
+   Openers for the task box. Clicking one fills the input rather
+   than submitting it: the wording is what the agent searches on,
+   so the user gets to edit before spending a run.
+============================================================ */
+
+let suggestionsKey = "";
+let suggestionsLoading = false;
+
+const SUGGESTION_LABELS = {
+  requested: "requested",
+  untested: "no tests",
+  hotspot: "widely imported",
+  large: "largest file",
+  model: "guess"
+};
+
+/* Built here rather than in index.html so the markup and its only
+   consumer stay in one place. */
+function suggestionBlock() {
+
+  const existing = $("#impactSuggestions");
+  if (existing) return existing;
+
+  const form = $("#impactForm");
+  if (!form || !form.parentNode) return null;
+
+  const block = document.createElement("div");
+  block.className = "suggestions";
+  block.id = "impactSuggestions";
+
+  form.parentNode.insertBefore(block, form);
+
+  return block;
+}
+
+function useSuggestion(task) {
+
+  const input = $("#task");
+  if (!input) return;
+
+  input.value = task;
+  input.focus();
+  input.setSelectionRange(task.length, task.length);
+}
+
+function renderSuggestions(items) {
+
+  const block = suggestionBlock();
+  if (!block) return;
+
+  block.innerHTML = "";
+
+  if (!items.length) return;
+
+  const heading = document.createElement("p");
+  heading.className = "suggestions-title";
+  heading.textContent = "Not sure where to start?";
+  block.appendChild(heading);
+
+  const row = document.createElement("div");
+  row.className = "suggestion-row";
+
+  items.forEach(item => {
+
+    /* A div, not a button: an issue chip holds a link as well as the
+       fill action, and an anchor inside a button is invalid. */
+    const chip = document.createElement("div");
+    chip.className = `suggestion suggestion-${item.source || "model"}`;
+
+    const main = document.createElement("button");
+    main.type = "button";
+    main.className = "suggestion-main";
+
+    /* Two lines fit most issue titles; the rest is one hover away,
+       along with the provenance. A user should be able to tell an
+       issue somebody filed from a model's guess before clicking. */
+    const tooltip = [item.full || item.task, item.reason]
+      .filter(Boolean)
+      .join("\n");
+
+    if (tooltip) main.title = tooltip;
+
+    const text = document.createElement("span");
+    text.className = "suggestion-task";
+    text.textContent = item.task;
+    main.appendChild(text);
+
+    const label = SUGGESTION_LABELS[item.source];
+
+    if (label) {
+      const tag = document.createElement("span");
+      tag.className = "suggestion-tag";
+      tag.textContent = label;
+      main.appendChild(tag);
+    }
+
+    main.addEventListener("click", () => useSuggestion(item.task));
+    chip.appendChild(main);
+
+    /* Issues link out, so the user can check the claim themselves
+       rather than taking the chip's word for it. */
+    if (item.url && item.number) {
+
+      const link = document.createElement("a");
+      link.className = "suggestion-link";
+      link.href = item.url;
+      link.target = "_blank";
+      link.rel = "noreferrer noopener";
+      link.textContent = `#${item.number}`;
+      link.title = "Open this issue on GitHub";
+
+      chip.appendChild(link);
+    }
+
+    row.appendChild(chip);
+  });
+
+  block.appendChild(row);
+}
+
+async function loadSuggestions() {
+
+  if (!state.repo.owner || suggestionsLoading) return;
+
+  const key =
+    `${state.repo.owner}/${state.repo.repo}@${state.repo.branch}`;
+
+  /* Keyed on the repository, so opening the tab again is free and
+     analyzing a different repository refetches on its own. */
+  if (suggestionsKey === key) return;
+
+  suggestionsLoading = true;
+  suggestionsKey = key;
+
+  const block = suggestionBlock();
+
+  if (block) {
+    block.innerHTML =
+      `<p class="impact-note">Looking for changes worth tracing…</p>`;
+  }
+
+  const query = new URLSearchParams({
+    owner: state.repo.owner,
+    repo: state.repo.repo,
+    branch: state.repo.branch
+  });
+
+  try {
+
+    const response = await fetch(
+      `${API_BASE}/api/impact/suggestions?${query}`
+    );
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      /* Not worth an error message: the box below still works. Clear
+         the key so opening the tab again retries. */
+      suggestionsKey = "";
+      if (block) block.innerHTML = "";
+      return;
+    }
+
+    renderSuggestions(data.suggestions || []);
+
+  } catch {
+    suggestionsKey = "";
+    if (block) block.innerHTML = "";
+  } finally {
+    suggestionsLoading = false;
+  }
+}
+
+
+/* ============================================================
+   OVERVIEW METRICS
+
+   Three cards that each mean something different. Dependencies is
+   exact, symbols is partial by design and says so, and coverage is
+   withheld where name matching cannot measure it.
+============================================================ */
+
+let metricsLoading = false;
+
+function setMetric(id, value, note) {
+  setText(`#${id}`, value);
+  setText(`#${id}Note`, note);
+}
+
+function renderMetrics(data) {
+
+  const dependencies = data.dependencies || {};
+
+  if (typeof dependencies.count === "number") {
+    setMetric(
+      "metricDependencies",
+      dependencies.count.toLocaleString(),
+      `Declared in ${dependencies.source}`
+    );
+  } else {
+    setMetric("metricDependencies", "—", "No manifest at the root");
+  }
+
+  const symbols = data.symbols || {};
+
+  /* Counting every symbol means reading every file. The number shown
+     is what has actually been read, with the denominator, rather than
+     a total nobody paid for. */
+  if (symbols.filesIndexed) {
+    setMetric(
+      "metricSymbols",
+      symbols.count.toLocaleString(),
+      `In ${symbols.filesIndexed} of ` +
+      `${(symbols.filesAnalyzable || 0).toLocaleString()} files read so far`
+    );
+  } else {
+    setMetric("metricSymbols", "—", "Counted as you open files");
+  }
+
+  const coverage = data.coverage || {};
+
+  if (!coverage.eligible) {
+    setMetric("metricCoverage", "—", "No source files to check");
+    return;
+  }
+
+  /* psf/requests scores 32% here and is thoroughly tested: it keeps
+     its tests in one file rather than one per module. A number under
+     a label saying TEST COVERAGE would be a false claim, so the dash
+     stays and the note says why. */
+  if (!coverage.reliable) {
+    setMetric("metricCoverage", "—", "Tests here are not named per file");
+    return;
+  }
+
+  const percent = Math.round((coverage.matched / coverage.eligible) * 100);
+
+  setMetric(
+    "metricCoverage",
+    `${percent}%`,
+    coverage.hasTests
+      ? `${coverage.matched} of ${coverage.eligible} files have a test`
+      : `No tests found in ${coverage.eligible} files`
+  );
+}
+
+async function loadMetrics() {
+
+  if (!state.repo.owner || metricsLoading) return;
+
+  metricsLoading = true;
+
+  const query = new URLSearchParams({
+    owner: state.repo.owner,
+    repo: state.repo.repo,
+    branch: state.repo.branch
+  });
+
+  try {
+
+    const response = await fetch(
+      `${API_BASE}/api/repository/metrics?${query}`
+    );
+
+    if (!response.ok) return;
+
+    renderMetrics(await response.json());
+
+  } catch {
+    /* The cards keep their dashes. Nothing else depends on this. */
+  } finally {
+    metricsLoading = false;
+  }
+}
+
+
+/* ============================================================
    KEYBOARD
 ============================================================ */
 
@@ -3213,6 +4086,7 @@ initTabs();
 initLegalPages();
 initModuleFilter();
 initImpact();
+initDiff();
 ensureToolbar();
 initCameraControls();
 updateNavigationControls();

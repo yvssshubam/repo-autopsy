@@ -11,12 +11,14 @@ Paste a repository URL and you get four views:
 - **Dependencies** takes a single file and shows what it imports and what
   imports it, with repository files kept separate from third-party packages.
 - **Task impact** takes a change you describe in a sentence and works out which
-  files it would touch.
+  files it would touch, with a row of suggested changes above the box so you do
+  not have to invent one.
 - **Overview** carries the repository's metrics and a description of what the
   project is for.
 
-The last two need a Groq API key. Without one, the first two work exactly the
-same and the rest is simply absent.
+Task impact and the written descriptions need a Groq API key. Without one, the
+graphs work exactly the same, the Overview metrics still fill in, and the rest
+is simply absent.
 
 ## Why it works this way
 
@@ -81,6 +83,45 @@ the answer opens straight into its dependency graph, so you can check the
 reasoning rather than take it on faith. It will sometimes be wrong; that is why
 the steps are visible.
 
+**Overview.** Four cards: file count, declared dependencies, symbols, and how
+many source files have a test named after them. Two of those are deliberately
+partial and say so underneath. The symbol count only covers files you have
+opened, because counting all of them means reading all of them, so it grows as
+you explore and shows its denominator. The coverage card shows nothing at all on
+projects that keep their tests in one file rather than one per module, because
+the only number it could compute there measures the naming convention rather
+than the coverage.
+
+## Where the task suggestions come from
+
+The task box asks the hardest question of whoever knows the repository least, so
+there is a row of suggested changes above it. Clicking one fills the box rather
+than running it, since the wording is what the agent searches on and you usually
+want to edit it first.
+
+They come from three places and each chip says which:
+
+- **Requested** is an open issue labelled as a feature. The app asks the
+  repository which labels it actually uses rather than guessing at
+  "enhancement", then queries that label and sorts by discussion. These link out
+  to the issue so you can check them yourself.
+- **No tests** and **largest file** are read off the tree, with no model
+  involved, so they cannot be invented. Vendored and generated files are
+  excluded, which matters more than it sounds: without that filter the largest
+  file in Datasette is a minified CodeMirror bundle, and the suggestion is to
+  split it.
+- **Guess** is a model proposal, used only when the first two come up short.
+  Every path it names is checked against the tree before the chip appears.
+
+There is deliberately no check for whether a suggested feature already exists.
+Comparing the words in a task against the symbol names in the files it points at
+sounds like it would work and does not. Tried against `psf/requests`, it got one
+verdict right out of four: it dropped a genuinely missing feature because "http"
+and "adapter" appear everywhere in an HTTP library, and it passed two features
+that were already built because "redirects" does not match `resolve_redirects`.
+Knowing whether a feature exists means reading the code, which is what task
+impact does and what a suggestion cannot afford.
+
 ## Summaries
 
 A line under the repository name saying what the project is for, and a line
@@ -126,9 +167,9 @@ actually costs:
 | Group | Default | Endpoints |
 | --- | --- | --- |
 | `agent` | 3/min, 25/day | task impact, a dozen model calls per run |
-| `summary` | 12/min, 120/day | the two summary endpoints |
+| `summary` | 12/min, 120/day | the two summary endpoints, task suggestions |
 | `github` | 45/min, 800/day | anything that reads source |
-| `cheap` | 120/min, 4000/day | tree and architecture, served from cache |
+| `cheap` | 120/min, 4000/day | tree, architecture and metrics, served from cache |
 
 Once GitHub's hourly remaining drops below `GITHUB_RESERVE`, source analysis
 returns 503 while the structural views keep working.
@@ -161,6 +202,7 @@ POST /api/analyze                              repository metadata
 GET  /api/repository/tree                      every path in the repo
 GET  /api/repository/architecture              top level
 GET  /api/repository/architecture/expand       one level down
+GET  /api/repository/metrics                   the overview cards
 GET  /api/health                               status and rate limit
 ```
 
@@ -169,6 +211,8 @@ The ones that read source:
 ```
 GET  /api/repository/file                      one file's contents
 GET  /api/repository/file/dependencies         imports and importers
+GET  /api/repository/file/tests                tests covering one file
+GET  /api/repository/diff                      what a range of commits touches
 GET  /api/repository/architecture/dependencies a folder's imports
 ```
 
@@ -177,12 +221,15 @@ The ones that call a model:
 ```
 GET  /api/repository/summary                   what the project is for
 GET  /api/repository/file/summary              what one file does
+GET  /api/impact/suggestions                   changes worth asking about
 POST /api/impact                               which files a change touches
 ```
 
 `file/dependencies` takes a `scope` of `none`, `directory` or `repository`.
 `architecture/dependencies` takes a `depth` of `shallow` or `deep`; deep recurses
-and costs one request per file, so it is opt-in.
+and costs one request per file, so it is opt-in. `impact/suggestions` only
+reaches a model when a repository has no labelled feature requests, so most of
+the time it costs two GitHub reads and nothing else.
 
 Interactive docs are at http://127.0.0.1:8000/docs.
 
@@ -195,13 +242,14 @@ backend/
 frontend/
   index.html
   css/style.css       base design
-  css/graph-ui.css    graph, controls, tabs
+  css/graph-ui.css    graph, controls, tabs, suggestions
   js/script.js        state, rendering, navigation
 ```
 
 ## Not built yet
 
-Symbol-level analysis, so a dependency can point at a function rather than a
-file. Test relationships, so you can see which tests cover a change. And
-architecture boundaries derived from actual imports rather than from folder
-names.
+Symbol counts for files nobody has opened, which needs a cheaper source than
+reading every one of them. Test coverage that means something on projects that
+do not name tests per file, since name matching scores `psf/requests` at 32% and
+that repository is thoroughly tested. And architecture boundaries derived from
+actual imports rather than from folder names.

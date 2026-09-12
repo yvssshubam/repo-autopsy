@@ -143,6 +143,11 @@ async def lifespan(app: FastAPI):
         f"Per-client limits:   summary {RATE_BUCKETS['summary'][0]}/min, "
         f"github {RATE_BUCKETS['github'][0]}/min"
     )
+    print(f"Agent model:         {AGENT_MODEL}")
+    print(
+        f"Model pacing:        {DEFAULT_MODEL_TPM} tokens/min default"
+        + (f", overrides: {MODEL_TPM}" if MODEL_TPM else "")
+    )
     print("=" * 60)
     print()
 
@@ -565,6 +570,109 @@ def normalize_path(path: str) -> str:
 
 
 # ============================================================
+# TESTS
+#
+# Two ways to link a test to the code it covers. Naming conventions
+# cost nothing because the tree is already in memory, and they are
+# right most of the time. Imports are the real evidence but cost one
+# GitHub request per test file, so they are opt-in.
+# ============================================================
+
+TEST_DIRECTORY_NAMES = {"test", "tests", "__tests__", "spec", "testing"}
+
+
+def is_test_file(path: str) -> bool:
+
+    parts = path.split("/")
+    name = parts[-1]
+    stem = name.rsplit(".", 1)[0]
+
+    if any(part.lower() in TEST_DIRECTORY_NAMES for part in parts[:-1]):
+        return True
+
+    lowered = stem.lower()
+
+    if (
+        lowered.startswith("test_")
+        or lowered.endswith("_test")
+        or lowered.endswith(".test")
+        or lowered.endswith(".spec")
+    ):
+        return True
+
+    # Java and C#: AppTest.java, TestApp.java, AppTests.java.
+    if name.endswith((".java", ".cs")):
+        return (
+            stem.endswith(("Test", "Tests"))
+            or (stem.startswith("Test") and stem[4:5].isupper())
+        )
+
+    return False
+
+
+def source_stem(path: str) -> str:
+    """The part of a filename a test would be named after."""
+
+    name = path.split("/")[-1]
+    stem = name.rsplit(".", 1)[0]
+
+    for suffix in (".test", ".spec"):
+        if stem.endswith(suffix):
+            stem = stem[: -len(suffix)]
+
+    if stem.lower().startswith("test_"):
+        stem = stem[5:]
+
+    if stem.lower().endswith("_test"):
+        stem = stem[:-5]
+
+    # Java and C# name tests AppTest or TestApp rather than app_test.
+    if len(stem) > 4:
+        if stem.endswith("Test"):
+            stem = stem[:-4]
+        elif stem.endswith("Tests"):
+            stem = stem[:-5]
+        elif stem.startswith("Test") and stem[4:5].isupper():
+            stem = stem[4:]
+
+    return stem
+
+
+def tests_matching_name(path: str, repository_files: set) -> list[str]:
+    """Test files named after this one. Free: no requests at all."""
+
+    stem = source_stem(path)
+
+    if not stem or stem in ("index", "mod", "lib", "main", "__init__"):
+        return []
+
+    matches = []
+
+    for candidate in repository_files:
+
+        if candidate == path or not is_test_file(candidate):
+            continue
+
+        if not is_source_file(candidate):
+            continue
+
+        if source_stem(candidate).lower() == stem.lower():
+            matches.append(candidate)
+
+    # Prefer a test sitting near the file it covers.
+    directory = "/".join(path.split("/")[:-1])
+
+    return sorted(
+        matches,
+        key=lambda item: (
+            0 if item.startswith(directory) else 1,
+            item.count("/"),
+            item,
+        ),
+    )
+
+
+# ============================================================
 # TREE CACHE
 # ============================================================
 
@@ -652,7 +760,9 @@ def tree_totals(tree) -> dict:
 
 def analyze_python(content: str) -> dict:
 
-    result = {"imports": [], "functions": [], "classes": []}
+    # symbols maps each import string to the names it brings in, so an
+    # edge can say "calls validate_dispute" rather than just "imports".
+    result = {"imports": [], "functions": [], "classes": [], "symbols": {}}
 
     try:
         tree = ast.parse(content)
@@ -664,13 +774,23 @@ def analyze_python(content: str) -> dict:
         if isinstance(node, ast.Import):
             for item in node.names:
                 result["imports"].append(item.name)
+                result["symbols"].setdefault(item.name, []).append(
+                    item.asname or item.name.split(".")[0]
+                )
 
         elif isinstance(node, ast.ImportFrom):
             # Leading dots encode the relative level so the resolver can
             # tell "from . import x" from "from ..pkg import x".
             level = node.level or 0
             module = node.module or ""
-            result["imports"].append(("." * level) + module)
+            encoded = ("." * level) + module
+
+            result["imports"].append(encoded)
+
+            names = result["symbols"].setdefault(encoded, [])
+
+            for item in node.names:
+                names.append(item.name if item.name != "*" else "*")
 
     for node in tree.body:
 
@@ -694,6 +814,53 @@ JS_IMPORT_PATTERNS = (
 GO_IMPORT_BLOCK = re.compile(r'import\s*\(([^)]*)\)', re.MULTILINE)
 GO_IMPORT_SINGLE = re.compile(r'^\s*import\s+(?:\w+\s+)?"([^"]+)"', re.MULTILINE)
 GO_QUOTED = re.compile(r'"([^"]+)"')
+
+
+def extract_symbols(specifier: str, statement: str, language: str) -> list[str]:
+    """The names an import statement pulls in."""
+
+    if language in ("JavaScript", "TypeScript"):
+
+        braces = re.search(r"\{([^}]*)\}", statement)
+
+        if braces:
+            return [
+                part.split(" as ")[-1].strip()
+                for part in braces.group(1).split(",")
+                if part.strip()
+            ]
+
+        namespace = re.search(r"\*\s+as\s+(\w+)", statement)
+        if namespace:
+            return [namespace.group(1)]
+
+        default = re.search(r"import\s+(\w+)\s*(?:,|from)", statement)
+        if default:
+            return [default.group(1)]
+
+        return []
+
+    if language == "Rust":
+
+        path = specifier.split(" as ")[0].strip()
+
+        braces = re.search(r"\{([^}]*)\}", path)
+
+        if braces:
+            return [
+                part.strip().split("::")[-1]
+                for part in braces.group(1).split(",")
+                if part.strip()
+            ]
+
+        tail = path.split("::")[-1].strip()
+        return [tail] if tail else []
+
+    if language == "Java":
+        tail = specifier.split(".")[-1].strip()
+        return [tail] if tail else []
+
+    return []
 
 
 def analyze_imports(content: str, language: str) -> list[str]:
@@ -729,6 +896,48 @@ def analyze_imports(content: str, language: str) -> list[str]:
     return list(dict.fromkeys(item.strip() for item in imports if item.strip()))
 
 
+IMPORT_STATEMENT_PATTERNS = {
+    "JavaScript": r"^.*\bfrom\s+[\"'](.+?)[\"'].*$|^\s*import\s+[\"'](.+?)[\"'].*$",
+    "Rust": r"^\s*use\s+([^;]+);",
+    "Java": r"^\s*import\s+(?:static\s+)?([^;]+);",
+}
+
+
+def collect_symbol_map(content: str, language: str,
+                       specifiers: list[str]) -> dict[str, list[str]]:
+    """Match each specifier back to the line that imported it, so the
+    names in that line can be attributed to the right target."""
+
+    if language not in ("JavaScript", "TypeScript", "Rust", "Java"):
+        return {}
+
+    symbols: dict[str, list[str]] = {}
+
+    remaining = set(specifiers)
+
+    for line in content.splitlines():
+
+        stripped = line.strip()
+
+        if not stripped or len(stripped) > 400:
+            continue
+
+        for specifier in list(remaining):
+
+            if specifier not in stripped:
+                continue
+
+            names = extract_symbols(specifier, stripped, language)
+
+            if names:
+                existing = symbols.setdefault(specifier, [])
+                for name in names:
+                    if name not in existing:
+                        existing.append(name)
+
+    return symbols
+
+
 def analyze_source(path: str, content: str) -> dict:
 
     language = detect_language(path)
@@ -738,6 +947,7 @@ def analyze_source(path: str, content: str) -> dict:
         "imports": [],
         "functions": [],
         "classes": [],
+        "symbols": {},
     }
 
     if language == "Python":
@@ -745,6 +955,9 @@ def analyze_source(path: str, content: str) -> dict:
         result["language"] = language
     else:
         result["imports"] = analyze_imports(content, language)
+        result["symbols"] = collect_symbol_map(
+            content, language, result["imports"]
+        )
         result["functions"] = re.findall(
             r'\b(?:function|func|fn)\s+([A-Za-z_]\w*)', content
         )
@@ -1132,6 +1345,18 @@ def index_file(repo_key: str, file_path: str, content: str,
     # "6 imports" instead of hiding what it stands for.
     counts: dict[str, int] = {}
 
+    # target -> the names taken from it. Several import statements can
+    # point at the same file, so these accumulate.
+    symbols: dict[str, list[str]] = {}
+
+    declared = analysis.get("symbols", {})
+
+    def record(key: str, imported_from: str):
+        names = symbols.setdefault(key, [])
+        for name in declared.get(imported_from, []):
+            if name and name not in names:
+                names.append(name)
+
     for imported in analysis["imports"]:
 
         target = resolve_import(imported, file_path, language, repository_files)
@@ -1139,6 +1364,7 @@ def index_file(repo_key: str, file_path: str, content: str,
         if target and target != file_path:
             resolved.append(target)
             counts[target] = counts.get(target, 0) + 1
+            record(target, imported)
             continue
 
         # A relative import that did not resolve is a file we could not
@@ -1152,6 +1378,7 @@ def index_file(repo_key: str, file_path: str, content: str,
         if label and label not in (".", ".."):
             external.append(label)
             counts[label] = counts.get(label, 0) + 1
+            record(label, imported)
 
     entry = {
         "language": language,
@@ -1160,6 +1387,7 @@ def index_file(repo_key: str, file_path: str, content: str,
         "functions": analysis["functions"],
         "classes": analysis["classes"],
         "counts": counts,
+        "symbols": symbols,
         # Kept so a summary costs no extra GitHub request for any file
         # the user has already opened.
         "head": content[:HEAD_CHARACTERS],
@@ -1221,6 +1449,85 @@ async def index_files(repo_key: str, owner: str, repo: str, branch: str,
 # MODEL CALLS
 # ============================================================
 
+# Provider limits are per model, per minute, and counted on input
+# tokens. Discovering them by being refused wastes the request and
+# loses whatever the call was for, so track usage and wait instead.
+MODEL_TPM = {
+    model.split("=")[0].strip(): int(model.split("=")[1])
+    for model in os.getenv("MODEL_TPM", "").split(",")
+    if "=" in model
+}
+
+DEFAULT_MODEL_TPM = int(os.getenv("DEFAULT_MODEL_TPM", "6500"))
+
+# model -> [(timestamp, tokens)]
+_model_usage: dict[str, list[tuple[float, int]]] = {}
+
+
+def estimate_tokens(messages: list) -> int:
+    return sum(len(str(message.get("content") or "")) for message in messages) // 4
+
+
+def model_limit(model: str) -> int:
+    return MODEL_TPM.get(model, DEFAULT_MODEL_TPM)
+
+
+def tokens_used_recently(model: str, now: float) -> int:
+
+    window = [
+        entry for entry in _model_usage.get(model, [])
+        if now - entry[0] < 60
+    ]
+
+    _model_usage[model] = window
+
+    return sum(tokens for _, tokens in window)
+
+
+async def reserve_tokens(model: str, estimate: int) -> bool:
+    """Wait until this call fits inside the model's per-minute budget.
+
+    Returns False if it cannot fit within a reasonable wait, so the
+    caller can give up rather than block a request for a minute."""
+
+    limit = model_limit(model)
+
+    # A single call bigger than the whole minute's budget can never
+    # succeed, so waiting for it only delays the failure.
+    if estimate > limit:
+        print(
+            f"Call to {model} needs about {estimate} tokens but the "
+            f"per-minute limit is {limit}."
+        )
+        return False
+
+    for _ in range(6):
+
+        now = time.time()
+        used = tokens_used_recently(model, now)
+
+        if used + estimate <= limit:
+            _model_usage.setdefault(model, []).append((now, estimate))
+            return True
+
+        # Wait for the oldest entry in the window to age out.
+        window = _model_usage.get(model, [])
+
+        if not window:
+            _model_usage.setdefault(model, []).append((now, estimate))
+            return True
+
+        wait = min(12, max(1, int(61 - (now - window[0][0]))))
+
+        print(
+            f"Pacing {model}: {used}/{limit} tokens used this minute, "
+            f"waiting {wait}s."
+        )
+
+        await asyncio.sleep(wait)
+
+    return False
+
 # sha or repo key -> summary text
 SUMMARY_CACHE: dict[str, str] = {}
 
@@ -1249,6 +1556,12 @@ async def call_model(model: str, system: str, user: str,
 
     if budget_remaining() <= 0:
         print("Summary budget for today is spent.")
+        return None
+
+    estimate = (len(system) + len(user)) // 4 + max_tokens
+
+    if not await reserve_tokens(model, estimate):
+        print("Could not fit the summary inside the minute's budget.")
         return None
 
     CALL_BUDGET["used"] += 1
@@ -1790,6 +2103,7 @@ async def file_dependencies(
     edges = []
 
     counts = entry.get("counts", {})
+    symbols = entry.get("symbols", {})
 
     for target in entry["resolved"]:
         nodes.append({
@@ -1800,8 +2114,14 @@ async def file_dependencies(
             "role": "import",
             "language": detect_language(target),
             "count": counts.get(target, 1),
+            "symbols": symbols.get(target, []),
         })
-        edges.append({"source": path, "target": target, "type": "dependency"})
+        edges.append({
+            "source": path,
+            "target": target,
+            "type": "dependency",
+            "symbols": symbols.get(target, []),
+        })
 
     for package in entry["external"]:
         node_id = f"external:{package}"
@@ -1813,10 +2133,19 @@ async def file_dependencies(
             "role": "import",
             "language": "package",
             "count": counts.get(package, 1),
+            "symbols": symbols.get(package, []),
         })
-        edges.append({"source": path, "target": node_id, "type": "external"})
+        edges.append({
+            "source": path,
+            "target": node_id,
+            "type": "external",
+            "symbols": symbols.get(package, []),
+        })
 
     for importer in imported_by:
+
+        taken = index.get(importer, {}).get("symbols", {}).get(path, [])
+
         nodes.append({
             "id": importer,
             "path": importer,
@@ -1824,8 +2153,14 @@ async def file_dependencies(
             "type": "file",
             "role": "importer",
             "language": detect_language(importer),
+            "symbols": taken,
         })
-        edges.append({"source": importer, "target": path, "type": "dependency"})
+        edges.append({
+            "source": importer,
+            "target": path,
+            "type": "dependency",
+            "symbols": taken,
+        })
 
     # De-duplicate while preserving order (a file can be both).
     seen = set()
@@ -1846,6 +2181,17 @@ async def file_dependencies(
             "functions": entry["functions"],
             "classes": entry["classes"],
         },
+        "exports": {
+            # Which of this file's definitions are actually used by the
+            # files that import it.
+            "used": sorted({
+                name
+                for importer in imported_by
+                for name in index.get(importer, {})
+                    .get("symbols", {}).get(path, [])
+            }),
+            "defined": entry["functions"] + entry["classes"],
+        },
         "meta": {
             "analyzable": True,
             "scope": scope,
@@ -1862,6 +2208,299 @@ async def file_dependencies(
             ),
             "complete": scope == "repository",
             "rateLimit": RATE_LIMIT,
+        },
+    }
+
+
+@app.get(
+    "/api/repository/file/tests",
+    dependencies=[Depends(rate_limit("github")), Depends(guard_github_quota)],
+)
+async def file_tests(
+    owner: str,
+    repo: str,
+    branch: str,
+    path: str,
+    scan: bool = Query(
+        False,
+        description=(
+            "Also read test files to see which ones import this file. "
+            "Costs one GitHub request per test file, so it is off by "
+            "default; naming conventions are free and usually right."
+        ),
+    ),
+):
+    """Which tests cover a file.
+
+    A name match is a strong hint. An import is proof. Both are
+    reported, labelled, so you can tell which you are looking at."""
+
+    path = path.strip("/")
+
+    tree = await get_tree(owner, repo, branch)
+
+    repository_files = {
+        item["path"] for item in tree if item.get("type") == "blob"
+    }
+
+    if path not in repository_files:
+        raise HTTPException(status_code=404, detail="File not in this tree.")
+
+    repo_key = cache_key(owner, repo, branch)
+
+    by_name = tests_matching_name(path, repository_files)
+
+    all_tests = [
+        candidate for candidate in repository_files
+        if is_test_file(candidate) and is_analyzable_file(candidate)
+    ]
+
+    scanned = 0
+
+    if scan:
+        # Read every test file once. They are usually a small fraction
+        # of a repository, and the index makes it a one-off cost.
+        batch = sorted(all_tests)[:REVERSE_SCAN_LIMIT_REPOSITORY]
+        stats = await index_files(
+            repo_key, owner, repo, branch, batch, repository_files
+        )
+        scanned = stats["fetched"] + stats["skipped"]
+
+    index = IMPORT_INDEX.get(repo_key, {})
+
+    by_import = {}
+
+    for candidate in all_tests:
+
+        entry = index.get(candidate)
+
+        if entry is None or path not in entry["resolved"]:
+            continue
+
+        by_import[candidate] = entry.get("symbols", {}).get(path, [])
+
+    results = []
+
+    for candidate in sorted(set(by_name) | set(by_import)):
+
+        evidence = []
+
+        if candidate in by_import:
+            evidence.append("imports")
+        if candidate in by_name:
+            evidence.append("name")
+
+        results.append({
+            "path": candidate,
+            "evidence": evidence,
+            "symbols": by_import.get(candidate, []),
+        })
+
+    # Imports outrank a name match; both together outrank either.
+    results.sort(
+        key=lambda item: (-len(item["evidence"]), item["path"])
+    )
+
+    return {
+        "path": path,
+        "tests": results,
+        "meta": {
+            "scanned": scanned,
+            "testFilesInRepo": len(all_tests),
+            "scanComplete": scan,
+            "indexedTests": sum(
+                1 for candidate in all_tests if candidate in index
+            ),
+        },
+    }
+
+
+# ============================================================
+# DIFF IMPACT
+#
+# Task impact from a description guesses at what changed. A commit
+# range says exactly what changed, so the only open question is what
+# it ripples into, which the import graph already answers.
+# ============================================================
+
+def build_reverse_index(repo_key: str) -> dict[str, list[str]]:
+    """target -> files that import it, from everything read so far."""
+
+    reverse: dict[str, list[str]] = {}
+
+    for source, entry in IMPORT_INDEX.get(repo_key, {}).items():
+        for target in entry["resolved"]:
+            reverse.setdefault(target, []).append(source)
+
+    return reverse
+
+
+def ripple_from(seeds: list[str], reverse: dict[str, list[str]],
+                depth: int) -> dict[str, dict]:
+    """Walk importers outward from the changed files.
+
+    Distance matters: something importing a changed file is more likely
+    to break than something three hops away, so each result carries how
+    far it sits and what led to it."""
+
+    affected: dict[str, dict] = {}
+    frontier = list(dict.fromkeys(seeds))
+    seen = set(frontier)
+
+    for hop in range(1, depth + 1):
+
+        nxt = []
+
+        for path in frontier:
+            for importer in reverse.get(path, []):
+
+                if importer in seen:
+                    continue
+
+                seen.add(importer)
+                affected[importer] = {"distance": hop, "via": path}
+                nxt.append(importer)
+
+        if not nxt:
+            break
+
+        frontier = nxt
+
+    return affected
+
+
+@app.get(
+    "/api/repository/diff",
+    dependencies=[Depends(rate_limit("github")), Depends(guard_github_quota)],
+)
+async def repository_diff(
+    owner: str,
+    repo: str,
+    base: str,
+    head: str,
+    branch: str = "",
+    depth: int = Query(2, ge=1, le=3),
+    scan: bool = Query(
+        False,
+        description=(
+            "Read the repository's source to find what imports the "
+            "changed files. Without it, only files already read count."
+        ),
+    ),
+):
+    """What a commit range changed, and what that change reaches."""
+
+    url = (
+        f"https://api.github.com/repos/{owner}/{repo}"
+        f"/compare/{base}...{head}"
+    )
+
+    response = await github_get(url)
+
+    if response.status_code == 404:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No such range. Check that {base} and {head} both exist.",
+        )
+
+    if response.status_code != 200:
+        raise HTTPException(
+            status_code=502,
+            detail="GitHub could not compare those two points.",
+        )
+
+    data = response.json()
+
+    changed = [
+        {
+            "path": item.get("filename", ""),
+            "status": item.get("status", "modified"),
+            "additions": item.get("additions", 0),
+            "deletions": item.get("deletions", 0),
+        }
+        for item in data.get("files", [])
+    ]
+
+    branch = branch or head
+
+    tree = await get_tree(owner, repo, branch)
+
+    repository_files = {
+        item["path"] for item in tree if item.get("type") == "blob"
+    }
+
+    repo_key = cache_key(owner, repo, branch)
+
+    # A deleted file is gone from the head tree, so it cannot ripple,
+    # but it is still the most interesting thing in the diff.
+    seeds = [
+        item["path"] for item in changed
+        if item["status"] != "removed"
+        and item["path"] in repository_files
+        and is_analyzable_file(item["path"])
+    ]
+
+    scanned = 0
+
+    if scan:
+        batch = sorted(
+            candidate for candidate in repository_files
+            if is_analyzable_file(candidate)
+        )[:REVERSE_SCAN_LIMIT_REPOSITORY]
+
+        stats = await index_files(
+            repo_key, owner, repo, branch, batch, repository_files
+        )
+        scanned = stats["fetched"] + stats["skipped"]
+
+    reverse = build_reverse_index(repo_key)
+    affected = ripple_from(seeds, reverse, depth)
+
+    changed_paths = {item["path"] for item in changed}
+
+    # Tests come free from naming, and the interesting ones are those
+    # covering something that changed but were not themselves touched.
+    tests: dict[str, dict] = {}
+
+    for path in seeds:
+        for test in tests_matching_name(path, repository_files):
+            if test in changed_paths:
+                continue
+            entry = tests.setdefault(test, {"covers": []})
+            entry["covers"].append(path)
+
+    for path, info in affected.items():
+        if is_test_file(path):
+            tests.setdefault(path, {"covers": [info["via"]]})
+
+    return {
+        "base": base,
+        "head": head,
+        "status": data.get("status"),
+        "commits": data.get("total_commits", 0),
+        "changed": changed,
+        "affected": [
+            {
+                "path": path,
+                "distance": info["distance"],
+                "via": info["via"],
+                "isTest": is_test_file(path),
+            }
+            for path, info in sorted(
+                affected.items(), key=lambda pair: (pair[1]["distance"], pair[0])
+            )
+        ],
+        "tests": [
+            {"path": path, "covers": sorted(set(info["covers"]))}
+            for path, info in sorted(tests.items())
+        ],
+        "meta": {
+            "changedFiles": len(changed),
+            "analyzableChanged": len(seeds),
+            "depth": depth,
+            "scanned": scanned,
+            "scanComplete": scan,
+            "truncated": len(changed) >= 300,
         },
     }
 
@@ -2060,10 +2699,6 @@ AGENT_TOKEN_BUDGET = int(os.getenv("AGENT_TOKEN_BUDGET", "5000"))
 AGENT_FULL_RESULTS = 3
 
 
-def estimate_tokens(messages: list) -> int:
-    return sum(len(str(message.get("content") or "")) for message in messages) // 4
-
-
 def trim_conversation(messages: list) -> list:
     """Keep the task and the recent detail; compress the rest.
 
@@ -2125,6 +2760,11 @@ async def call_model_with_tools(messages: list, tools: list | None,
 
     if budget_remaining() <= 0:
         return None, "daily_budget_spent"
+
+    estimate = estimate_tokens(messages) + max_tokens
+
+    if not await reserve_tokens(AGENT_MODEL, estimate):
+        return None, "model_rate_limit:30"
 
     CALL_BUDGET["used"] += 1
 
@@ -2540,6 +3180,15 @@ async def task_impact(request: ImpactRequest):
 
             if name == "read_file":
                 parts = [f"{path} ({entry['language']})"]
+                symbol_map = entry.get("symbols", {})
+                if symbol_map:
+                    parts.append(
+                        "Uses: " + "; ".join(
+                            f"{target.split('/')[-1]}: {', '.join(names[:5])}"
+                            for target, names in list(symbol_map.items())[:5]
+                            if names
+                        )
+                    )
                 if entry["functions"]:
                     parts.append("Functions: " + ", ".join(entry["functions"][:20]))
                 if entry["classes"]:
@@ -2554,8 +3203,11 @@ async def task_impact(request: ImpactRequest):
                 if path in data["resolved"] and other != path
             ]
 
+            tests = tests_matching_name(path, repository_files)[:4]
+
             return (
                 f"{path}\n"
+                f"Tests named for it: {', '.join(tests) or 'none found'}\n"
                 f"Imports: {', '.join(entry['resolved'][:8]) or 'none in repo'}\n"
                 f"Packages: {', '.join(entry['external'][:6]) or 'none'}\n"
                 f"Imported by (files read so far): "
@@ -2787,6 +3439,854 @@ async def task_impact(request: ImpactRequest):
         "steps": steps,
         "filesRead": reads,
         "budgetRemaining": budget_remaining(),
+    }
+
+
+# ============================================================
+# IMPACT SUGGESTIONS
+#
+# The blank "what are you changing?" box asks the hardest question of
+# whoever knows the repository least. These are openers.
+#
+# Three sources, strongest first:
+#
+#   requested  open issues labelled as features. Written by people who
+#              know the repository, and duplicates of existing features
+#              get closed, so these are real and unbuilt by definition.
+#   large      the biggest source file, by byte size.
+#   untested   files with no test named after them. Free, but only
+#              honest on repositories that name tests that way, which
+#              is what follows_test_naming checks.
+#   model      a guess, used only when the first two come up short.
+#
+# Every path a suggestion names is checked against the tree. There is
+# deliberately no check for "does this feature already exist": a
+# keyword comparison against symbol names scored one correct verdict
+# in four on psf/requests, killing a good suggestion and passing two
+# features that were already built. Knowing whether a feature exists
+# means reading the code, which is what /api/impact does and what a
+# suggestion cannot afford.
+# ============================================================
+
+from urllib.parse import quote
+
+# repo_key -> [suggestion]. Model guesses only; they do not go stale.
+SUGGESTION_CACHE: dict[str, list[dict]] = {}
+
+# "owner/repo" -> {"issues": [...], "fetched_at": ts}. Issues do.
+ISSUE_CACHE: dict[str, dict] = {}
+
+ISSUE_CACHE_TTL_SECONDS = int(os.getenv("ISSUE_CACHE_TTL", "900"))
+
+# Vendored and generated code. IGNORED_DIRECTORIES already covers
+# node_modules, dist and vendor, but a project that checks a bundle
+# into its own static/ directory slips past it: datasette ships
+# datasette/static/cm-editor-6.0.1.bundle.js, which this tier happily
+# nominated as "the largest source file" and offered to split.
+# Directories that only ever hold third-party code. static/, assets/
+# and public/ are deliberately NOT here: datasette keeps its own
+# table.js in static/ next to the vendored bundle, and an impact run
+# named that file as the second place a change lands. Excluding the
+# directory would have hidden a file the user needs.
+VENDOR_DIRECTORY_NAMES = {
+    "third_party", "thirdparty", "vendored", "generated",
+    "bundles", "external",
+}
+
+VENDOR_FILENAME_MARKERS = (
+    ".min.", ".bundle.", "-bundle.", ".pack.", "-min.",
+    ".generated.", "_pb2.", ".pb.", "-lock.",
+)
+
+# A version number in a filename is the giveaway for a dropped-in
+# library: cm-editor-6.0.1.bundle.js, jquery-3.7.1.js.
+VERSIONED_FILENAME = re.compile(r"[-_.]\d+\.\d+(\.\d+)?[-_.]")
+
+
+def is_vendored(path: str) -> bool:
+    """Code the project did not write and would not edit.
+
+    Judged on the filename first, because the directory is the weaker
+    signal: hand-written and vendored code sit side by side in static/
+    all the time. Suggesting a change to a build artifact is worse
+    than suggesting nothing, since it looks authoritative and is
+    unactionable."""
+
+    parts = path.split("/")
+    name = parts[-1].lower()
+
+    if any(marker in name for marker in VENDOR_FILENAME_MARKERS):
+        return True
+
+    if VERSIONED_FILENAME.search(name):
+        return True
+
+    return any(part.lower() in VENDOR_DIRECTORY_NAMES for part in parts[:-1])
+
+
+# Issue titles are written for maintainers: prefixed, backticked, and
+# often a fragment rather than a sentence. Light cleanup only. Rewriting
+# somebody's issue with a model would cost a call and risk changing what
+# they asked for.
+ISSUE_TITLE_PREFIXES = (
+    "feature request:", "feature:", "potential feature:", "proposal:",
+    "rfe:", "idea:", "enhancement:", "request:", "[feature]",
+    "[enhancement]", "feature -", "suggestion:",
+)
+
+
+def clean_issue_title(title: str) -> str:
+
+    text = " ".join(str(title).split()).replace("`", "")
+
+    lowered = text.lower()
+
+    for prefix in ISSUE_TITLE_PREFIXES:
+        if lowered.startswith(prefix):
+            text = text[len(prefix):].strip(" -:")
+            break
+
+    if text and text[0].islower() and not text.startswith(("?", "/", "-")):
+        text = text[0].upper() + text[1:]
+
+    return text
+
+
+# Stems too common to say anything about test coverage.
+GENERIC_STEMS = {"index", "mod", "lib", "main", "__init__", "app", "utils"}
+
+# Label vocabulary varies per project, so this matches on substrings
+# rather than pretending there is one right label name.
+FEATURE_LABEL_WORDS = ("enhancement", "feature", "proposal", "idea")
+
+EXCLUDED_LABEL_WORDS = ("bug", "regression", "security", "question")
+
+SUGGEST_SYSTEM_PROMPT = (
+    "You propose changes a developer could make to one specific "
+    "repository. Reply with JSON and nothing else, in this shape: "
+    '{"suggestions": [{"task": "...", "files": ["path/one.py"]}]}. '
+    "Give exactly four. Each task is one imperative line under twelve "
+    "words. Propose capabilities this project does not appear to have "
+    "yet but that its users would want, in its own domain. Never "
+    "propose housekeeping: no type hints, no docstrings, no logging, "
+    "no renaming, no refactoring, no test coverage, no error message "
+    "wording. Every task must name at least one path from the file "
+    "list, copied character for character, where the work would "
+    "start. Never invent a path. No prose, no markdown, no fences."
+)
+
+
+def plural_count(count: int, noun: str) -> str:
+    return f"{count} {noun}" + ("" if count == 1 else "s")
+
+
+def tested_stems(repository_files: set) -> set:
+    """Every name a test file is named after. One pass, so coverage
+    checking stays linear instead of one scan per candidate."""
+
+    stems = set()
+
+    for path in repository_files:
+
+        if not is_test_file(path) or not is_source_file(path):
+            continue
+
+        stem = source_stem(path).lower()
+
+        if stem:
+            stems.add(stem)
+
+    return stems
+
+
+def follows_test_naming(repository_files: set, candidates: list[str],
+                        covered: set) -> bool:
+    """Whether this repository names tests after the files they cover.
+
+    psf/requests puts nearly everything in one tests/test_requests.py.
+    Name matching sees 32% coverage there and would report two of the
+    best-tested modules in Python as untested. A repository that has
+    tests but does not follow the convention gets no coverage
+    suggestions at all, because the only honest answer is that this
+    method cannot tell."""
+
+    has_tests = any(
+        is_test_file(path) and is_analyzable_file(path)
+        for path in repository_files
+    )
+
+    # No tests anywhere is not a convention problem. It is the finding.
+    if not has_tests:
+        return True
+
+    eligible = [
+        path for path in candidates
+        if source_stem(path).lower() not in GENERIC_STEMS
+    ]
+
+    if not eligible:
+        return False
+
+    matched = sum(
+        1 for path in eligible if source_stem(path).lower() in covered
+    )
+
+    return (matched / len(eligible)) >= 0.5
+
+
+def grounded_suggestions(tree, repo_key: str,
+                         repository_files: set) -> list[dict]:
+    """Suggestions drawn from what is already known. No model, no
+    requests, nothing that can be hallucinated."""
+
+    sizes = {
+        item["path"]: item.get("size") or 0
+        for item in tree
+        if item.get("type") == "blob"
+    }
+
+    # is_analyzable_file, not is_source_file: the latter lets .md and
+    # .json through, and "add tests for README.md" is not a suggestion.
+    candidates = [
+        path for path in repository_files
+        if is_analyzable_file(path)
+        and not is_test_file(path)
+        and not is_vendored(path)
+    ]
+
+    if not candidates:
+        return []
+
+    out: list[dict] = []
+    covered = tested_stems(repository_files)
+
+    if follows_test_naming(repository_files, candidates, covered):
+
+        untested = [
+            path for path in candidates
+            if (stem := source_stem(path).lower())
+            and stem not in GENERIC_STEMS
+            and stem not in covered
+        ]
+
+        # Biggest first: an untested 900-line module is a better prompt
+        # than an untested three-line constants file.
+        untested.sort(key=lambda path: -sizes.get(path, 0))
+
+        for path in untested[:2]:
+            out.append({
+                "task": f"Add tests for {path}",
+                "reason": "No test file is named after it.",
+                "source": "untested",
+                "files": [path],
+            })
+
+    # In-degree over whatever has been indexed so far. Only meaningful
+    # once the user has opened some files, which is why it is absent
+    # rather than faked on a fresh repository.
+    index = IMPORT_INDEX.get(repo_key, {})
+
+    if index:
+
+        in_degree: dict[str, int] = {}
+
+        for entry in index.values():
+            for target in entry.get("resolved", []):
+                in_degree[target] = in_degree.get(target, 0) + 1
+
+        ranked = sorted(in_degree.items(), key=lambda pair: -pair[1])
+
+        suggested = {path for item in out for path in item["files"]}
+
+        for path, count in ranked[:1]:
+            if (
+                count >= 3
+                and path in repository_files
+                and path not in suggested
+            ):
+                out.append({
+                    "task": f"Refactor {path}",
+                    "reason": (
+                        f"{count} files you have opened import it, so a "
+                        "change here travels furthest."
+                    ),
+                    "source": "hotspot",
+                    "files": [path],
+                })
+
+    largest = max(candidates, key=lambda path: sizes.get(path, 0))
+
+    already = {path for item in out for path in item["files"]}
+
+    if sizes.get(largest, 0) > 20000 and largest not in already:
+        out.append({
+            "task": f"Split {largest} into smaller modules",
+            "reason": f"{sizes[largest] // 1000}KB, the largest source file here.",
+            "source": "large",
+            "files": [largest],
+        })
+
+    return out
+
+
+def is_feature_issue(issue: dict) -> bool:
+    """A label saying this is wanted, and none saying it is a defect."""
+
+    names = [
+        str(label.get("name", "")).lower()
+        for label in issue.get("labels", [])
+        if isinstance(label, dict)
+    ]
+
+    if any(word in name for name in names for word in EXCLUDED_LABEL_WORDS):
+        return False
+
+    return any(word in name for name in names for word in FEATURE_LABEL_WORDS)
+
+
+async def feature_labels(owner: str, repo: str) -> list[str]:
+    """Which label this project files feature requests under.
+
+    Asking beats guessing. "enhancement", "Feature Request", "type:
+    feature" and "kind/feature" are all in use out there, and fetching
+    the 50 most recent issues in the hope that a labelled one turns up
+    found nothing on psf/requests, where recent traffic is mostly
+    unlabelled."""
+
+    try:
+        response = await github_get(
+            f"https://api.github.com/repos/{owner}/{repo}"
+            "/labels?per_page=100"
+        )
+    except HTTPException:
+        return []
+
+    if response.status_code != 200:
+        return []
+
+    try:
+        labels = response.json()
+    except ValueError:
+        return []
+
+    if not isinstance(labels, list):
+        return []
+
+    names = []
+
+    for label in labels:
+
+        if not isinstance(label, dict):
+            continue
+
+        name = str(label.get("name", ""))
+        lowered = name.lower()
+
+        if any(word in lowered for word in EXCLUDED_LABEL_WORDS):
+            continue
+
+        if any(word in lowered for word in FEATURE_LABEL_WORDS):
+            names.append(name)
+
+    # Two at most: each one costs a request, and a project rarely files
+    # the same request under three different labels.
+    return names[:2]
+
+
+async def requested_suggestions(owner: str, repo: str,
+                                limit: int = 3) -> list[dict]:
+    """Open issues asking for features.
+
+    The strongest source available and the cheapest to trust: somebody
+    who knows the project wrote them, and a maintainer would have
+    closed them if the feature already existed."""
+
+    issue_key = f"{owner}/{repo}"
+    cached = ISSUE_CACHE.get(issue_key)
+
+    if cached and (time.time() - cached["fetched_at"]) < ISSUE_CACHE_TTL_SECONDS:
+        return cached["issues"][:limit]
+
+    labels = await feature_labels(owner, repo)
+
+    if not labels:
+        ISSUE_CACHE[issue_key] = {"issues": [], "fetched_at": time.time()}
+        return []
+
+    # sort=comments, not updated: the most discussed open feature
+    # request is a better opener than the most recently touched one.
+    url = (
+        f"https://api.github.com/repos/{owner}/{repo}/issues"
+        f"?state=open&labels={quote(labels[0], safe='')}"
+        "&sort=comments&direction=desc&per_page=30"
+    )
+
+    # A repository with issues disabled, or a quota that has run out,
+    # costs the user nothing here. The other tiers still answer.
+    try:
+        response = await github_get(url)
+    except HTTPException:
+        return []
+
+    if response.status_code != 200:
+        return []
+
+    try:
+        issues = response.json()
+    except ValueError:
+        return []
+
+    if not isinstance(issues, list):
+        return []
+
+    out: list[dict] = []
+
+    for issue in issues:
+
+        if not isinstance(issue, dict):
+            continue
+
+        # This endpoint returns pull requests alongside issues.
+        if "pull_request" in issue:
+            continue
+
+        if not is_feature_issue(issue):
+            continue
+
+        raw = " ".join(str(issue.get("title", "")).split())
+        title = clean_issue_title(raw)
+
+        # A title that is only a code fragment tells a reader nothing.
+        if len(title) < 8:
+            continue
+
+        comments = issue.get("comments", 0) or 0
+
+        out.append({
+            "task": title[:140],
+            "full": raw[:200],
+            "reason": (
+                f"Open issue #{issue.get('number')}"
+                + (f", {plural_count(comments, 'comment')}" if comments else "")
+            ),
+            "source": "requested",
+            "files": [],
+            "url": issue.get("html_url", ""),
+            "number": issue.get("number"),
+        })
+
+    ISSUE_CACHE[issue_key] = {"issues": out, "fetched_at": time.time()}
+
+    return out[:limit]
+
+
+def sample_paths(repository_files: set, limit: int = 60) -> list[str]:
+    """A readable cross-section of the repository for the prompt.
+    Shallow files first: they are the ones that describe what a project
+    is, and they cost fewer tokens."""
+
+    paths = [
+        path for path in repository_files
+        if is_analyzable_file(path)
+        and not is_test_file(path)
+        and not is_vendored(path)
+    ]
+
+    paths.sort(key=lambda path: (path.count("/"), len(path), path))
+
+    return paths[:limit]
+
+
+async def model_suggestions(owner: str, repo: str, repo_key: str,
+                            repository_files: set) -> list[dict]:
+    """The fallback tier. Everything it names is checked against the
+    tree, because a model naming a plausible path that is not in the
+    repository is the failure worth catching."""
+
+    if repo_key in SUGGESTION_CACHE:
+        return SUGGESTION_CACHE[repo_key]
+
+    if not GROQ_API_KEY or budget_remaining() <= 0:
+        return []
+
+    paths = sample_paths(repository_files)
+
+    if not paths:
+        return []
+
+    summary = SUMMARY_CACHE.get(f"repo:{repo_key}", "")
+
+    prompt = "\n\n".join(
+        part for part in (
+            f"Repository: {owner}/{repo}",
+            f"What it is: {summary}" if summary else "",
+            "Files:\n" + "\n".join(paths),
+        ) if part
+    )
+
+    text = await call_model(
+        REPO_MODEL, SUGGEST_SYSTEM_PROMPT, prompt, max_tokens=500
+    )
+
+    parsed = parse_report_json(text or "")
+
+    proposed = (parsed or {}).get("suggestions", [])
+
+    verified: list[dict] = []
+
+    for item in proposed if isinstance(proposed, list) else []:
+
+        if not isinstance(item, dict):
+            continue
+
+        task = " ".join(str(item.get("task", "")).split())[:120]
+
+        if not task:
+            continue
+
+        files = [
+            str(path).strip()
+            for path in item.get("files", [])
+            if str(path).strip() in repository_files
+        ]
+
+        # A task naming no real file is a task about a repository the
+        # model imagined. Dropping it is the whole point of this check.
+        if not files:
+            continue
+
+        verified.append({
+            "task": task,
+            "reason": "",
+            "source": "model",
+            "files": files[:3],
+        })
+
+    SUGGESTION_CACHE[repo_key] = verified[:4]
+
+    return verified[:4]
+
+
+@app.get(
+    "/api/impact/suggestions",
+    dependencies=[Depends(rate_limit("summary"))],
+)
+async def impact_suggestions(owner: str, repo: str, branch: str):
+    """Changes worth asking about, for someone who has just arrived."""
+
+    repo_key = cache_key(owner, repo, branch)
+
+    tree = await get_tree(owner, repo, branch)
+
+    repository_files = {
+        item["path"] for item in tree if item.get("type") == "blob"
+    }
+
+    requested = await requested_suggestions(owner, repo)
+
+    grounded = grounded_suggestions(tree, repo_key, repository_files)
+
+    suggestions = requested + grounded
+
+    # The model tier is a fallback, not the main event. A repository
+    # with real feature requests does not need guesses beside them.
+    if len(suggestions) < 3:
+        suggestions = suggestions + await model_suggestions(
+            owner, repo, repo_key, repository_files
+        )
+
+    return {
+        "suggestions": suggestions[:6],
+        "sources": sorted({item["source"] for item in suggestions}),
+        "budgetRemaining": budget_remaining(),
+    }
+
+
+# ============================================================
+# OVERVIEW METRICS
+#
+# Three cards that have said "coming later" since the first build.
+# They are not one feature: they cost wildly different amounts, and
+# one of them cannot honestly be computed at all.
+#
+#   dependencies  exact, one file read. The manifest is the answer.
+#   symbols       exact for what has been indexed, unknowable for the
+#                 rest without reading every file. Reported as partial,
+#                 with the denominator shown, rather than guessed.
+#   coverage      name matching only, and only where the repository
+#                 follows that convention. psf/requests scores 32% by
+#                 this measure and is thoroughly tested, so the number
+#                 is withheld rather than shown wrong.
+# ============================================================
+
+# repo_key -> {"count": n, "source": name}. The manifest does not
+# change while a repository is open, and the overview card is
+# refetched every time the tab is opened, so caching this is what
+# keeps repeat visits free.
+DEPENDENCY_CACHE: dict[str, dict] = {}
+
+try:
+    import tomllib
+except ImportError:  # Python 3.10 and earlier
+    tomllib = None
+
+
+def count_package_json(text: str) -> int:
+
+    try:
+        data = json.loads(text)
+    except ValueError:
+        return 0
+
+    if not isinstance(data, dict):
+        return 0
+
+    total = 0
+
+    for field in ("dependencies", "devDependencies", "peerDependencies"):
+        section = data.get(field)
+        if isinstance(section, dict):
+            total += len(section)
+
+    return total
+
+
+def count_requirements_txt(text: str) -> int:
+
+    names = set()
+
+    for line in text.splitlines():
+
+        line = line.split("#")[0].strip()
+
+        if not line or line.startswith("-"):
+            continue
+
+        # "django>=4.2" and "requests[security]==2.31" both reduce to
+        # the distribution name, so a pinned and unpinned line are not
+        # counted twice.
+        name = re.split(r"[\[<>=!~;\s]", line, maxsplit=1)[0].strip()
+
+        if name:
+            names.add(name.lower())
+
+    return len(names)
+
+
+def count_toml_dependencies(text: str, cargo: bool = False) -> int:
+
+    if tomllib is None:
+        return 0
+
+    try:
+        data = tomllib.loads(text)
+    except Exception:
+        return 0
+
+    if cargo:
+        return sum(
+            len(data.get(field, {}))
+            for field in ("dependencies", "dev-dependencies", "build-dependencies")
+            if isinstance(data.get(field), dict)
+        )
+
+    total = 0
+
+    project = data.get("project", {})
+
+    if isinstance(project, dict):
+
+        listed = project.get("dependencies")
+
+        if isinstance(listed, list):
+            total += len(listed)
+
+        optional = project.get("optional-dependencies")
+
+        if isinstance(optional, dict):
+            total += sum(
+                len(group) for group in optional.values()
+                if isinstance(group, list)
+            )
+
+    # Poetry keeps its dependencies somewhere else entirely.
+    poetry = data.get("tool", {}).get("poetry", {})
+
+    if isinstance(poetry, dict):
+        listed = poetry.get("dependencies")
+        if isinstance(listed, dict):
+            # "python" is a version constraint, not a package.
+            total += len([k for k in listed if k.lower() != "python"])
+
+    return total
+
+
+def count_go_mod(text: str) -> int:
+
+    names = set()
+    in_block = False
+
+    for line in text.splitlines():
+
+        line = line.split("//")[0].strip()
+
+        if not line:
+            continue
+
+        if line.startswith("require ("):
+            in_block = True
+            continue
+
+        if in_block and line == ")":
+            in_block = False
+            continue
+
+        if in_block:
+            parts = line.split()
+            if parts:
+                names.add(parts[0])
+            continue
+
+        if line.startswith("require "):
+            parts = line[8:].split()
+            if parts:
+                names.add(parts[0])
+
+    return len(names)
+
+
+def count_pom_xml(text: str) -> int:
+    return len(re.findall(r"<dependency>", text))
+
+
+MANIFEST_COUNTERS = {
+    "package.json": count_package_json,
+    "requirements.txt": count_requirements_txt,
+    "pyproject.toml": lambda text: count_toml_dependencies(text),
+    "Cargo.toml": lambda text: count_toml_dependencies(text, cargo=True),
+    "go.mod": count_go_mod,
+    "pom.xml": count_pom_xml,
+}
+
+
+def coverage_metric(repository_files: set) -> dict:
+    """Files with a test named after them, and whether that number
+    means anything for this repository."""
+
+    candidates = [
+        path for path in repository_files
+        if is_analyzable_file(path)
+        and not is_test_file(path)
+        and not is_vendored(path)
+    ]
+
+    covered = tested_stems(repository_files)
+
+    eligible = [
+        path for path in candidates
+        if source_stem(path).lower() not in GENERIC_STEMS
+    ]
+
+    matched = sum(
+        1 for path in eligible if source_stem(path).lower() in covered
+    )
+
+    has_tests = any(
+        is_test_file(path) and is_analyzable_file(path)
+        for path in repository_files
+    )
+
+    return {
+        "matched": matched,
+        "eligible": len(eligible),
+        "hasTests": has_tests,
+        # The guard from the suggestion tier, reused: below 50% this
+        # project does not name tests after the files they cover, and
+        # the ratio measures the convention rather than the coverage.
+        "reliable": follows_test_naming(repository_files, candidates, covered),
+    }
+
+
+def symbol_metric(repo_key: str, repository_files: set) -> dict:
+    """Functions and classes seen so far.
+
+    Complete only if the user has opened everything, which is the
+    honest shape for a tool that reads files on demand. The
+    denominator is returned so the card can say so."""
+
+    index = IMPORT_INDEX.get(repo_key, {})
+
+    total = 0
+
+    for entry in index.values():
+        total += len(entry.get("functions", []))
+        total += len(entry.get("classes", []))
+
+    analyzable = [
+        path for path in repository_files
+        if is_analyzable_file(path) and not is_vendored(path)
+    ]
+
+    return {
+        "count": total,
+        "filesIndexed": len(index),
+        "filesAnalyzable": len(analyzable),
+    }
+
+
+@app.get(
+    "/api/repository/metrics",
+    dependencies=[Depends(rate_limit("cheap"))],
+)
+async def repository_metrics(owner: str, repo: str, branch: str):
+    """The three overview cards. One GitHub read at most."""
+
+    repo_key = cache_key(owner, repo, branch)
+
+    tree = await get_tree(owner, repo, branch)
+
+    repository_files = {
+        item["path"] for item in tree if item.get("type") == "blob"
+    }
+
+    dependencies = DEPENDENCY_CACHE.get(repo_key)
+
+    semaphore = asyncio.Semaphore(1)
+
+    if dependencies is None:
+        dependencies = {"count": None, "source": None}
+
+    # First manifest at the repository root wins. Walking every
+    # manifest in a monorepo would cost a request each and produce a
+    # number nobody asked for.
+    for name, counter in (
+        MANIFEST_COUNTERS.items()
+        if repo_key not in DEPENDENCY_CACHE else ()
+    ):
+
+        if name not in repository_files:
+            continue
+
+        try:
+            text = await fetch_file_text(
+                semaphore, owner, repo, branch, name
+            )
+        except HTTPException:
+            break
+
+        if not text:
+            break
+
+        dependencies = {"count": counter(text), "source": name}
+        break
+
+    DEPENDENCY_CACHE[repo_key] = dependencies
+
+    return {
+        "files": sum(1 for item in tree if item.get("type") == "blob"),
+        "dependencies": dependencies,
+        "symbols": symbol_metric(repo_key, repository_files),
+        "coverage": coverage_metric(repository_files),
     }
 
 
